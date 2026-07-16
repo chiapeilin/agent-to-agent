@@ -17,7 +17,7 @@ cp .env.example .env   # 填入 OPENAI_API_KEY
 
 ## 執行
 
-三個角色各開一個終端機（獨立 process、不同 port）。
+三個角色各開一個終端機（獨立 process、不同 port）：
 
 ```bash
 # 1. Agent（:9999）
@@ -33,22 +33,53 @@ uv run python registry_client.py                  # 互動輸入需求
 uv run python -m code_review_agent.test_client    # 或直連指定 agent
 ```
 
+## 認證（OAuth2 / OIDC，選用）
+
+預設無認證。啟用後 **agent 與 registry** 都對每個請求驗 JWT（`iss`/`aud`/`exp`）：缺/壞 token → 401、IdP/JWKS 連不上 → 503。agent 額外查 scope（不足 → 403）；registry 只驗身分（讀目錄不需 skill scope），`POST /register` 走自己的 `x-registry-token`。client（`registry_client` / `test_client`）會自動換 token 帶上。每個驗過的請求會在該 server 的 log 印一行 `OIDC ✓ 通過 …`（含 `sub` / `client` / `scope`），方便確認認證有生效。走標準 OAuth2，用 [Keycloak](https://www.keycloak.org/) 當本機 IdP、[Colima](https://github.com/abiosoft/colima) 當容器（免 Docker Desktop）。
+
+### 前置（各裝一次）
+
+```bash
+brew install colima docker      # 容器 runtime
+colima start                    # 啟動 VM
+bash scripts/setup_keycloak.sh  # 建 Keycloak realm/client/scope，並把 OAuth 變數寫進 .env
+```
+
+### 執行
+
+啟動指令與上面〈執行〉相同，只需先確保 IdP 在跑（`.env` 有 `A2A_OIDC_*` 就會自動啟用認證）：
+
+```bash
+docker start a2a-keycloak        # 若已停（開機後）；container 不存在則重跑 setup_keycloak.sh
+```
+
+驗證有生效（兩者都應回 **401**）：
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:9999/         # agent
+curl -s -o /dev/null -w "%{http_code}\n"      http://127.0.0.1:8000/agents      # registry
+```
+
+### 收工
+
+```bash
+docker stop a2a-keycloak    # 停 Keycloak（保留資料，下次 docker start 續用）
+colima stop                 # 完全不用容器時再關 VM
+```
+
+
 ## 檔案結構
 
 ```
 code_review_agent/
 ├── __main__.py         # AgentCard/AgentSkill 定義 + 起 A2A server（含 self-registration）
 ├── agent_executor.py   # A2A 協定黏著層 + 讀 repo、呼叫 LLM 的邏輯
+├── auth.py             # OAuth2/OIDC 驗證 middleware + Agent Card security 宣告
 ├── prompt.md           # code-review skill 本體（LLM 的 system prompt）
 └── test_client.py      # 直連 agent 的測試 client
 registry.py             # curated registry 服務
 registry_client.py      # 經 registry 找 agent 並委派的 router client
+scripts/setup_keycloak.sh  # 一鍵起本機 Keycloak 並產生 OAuth 設定
 ```
 
 改東西：審查標準改 `prompt.md`；LLM 後端改 `agent_executor.py`；名片/skill/port 改 `__main__.py` 的 `build_agent_card()`；收錄哪些 agent 改 `REGISTRY_AGENT_URLS`。
-
-## 限制與安全
-
-- agent 會把 `CODE_REVIEW_REPO_PATH` 下 **git 追蹤的文字檔**送至外部 LLM，經三層過濾：`.gitignore` → 機密黑名單（`.env`、`.pem`、`.key`、`id_rsa`…）→ 二進位檔與超過 100KB 的檔略過。仍請勿對含機密的 repo 直接使用。
-- self-registration 未設 `REGISTRY_REGISTER_TOKEN` 時任何人都能註冊，僅建議用於本機/受控內網。
-- router 用 LLM 選 agent，輸出具**非決定性**，可能選不到（會回報並停止）。

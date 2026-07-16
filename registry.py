@@ -4,14 +4,25 @@
 """
 
 import os
+from dataclasses import replace
 from urllib.parse import urlparse
 
 import httpx
 import uvicorn
 from a2a.client.card_resolver import A2ACardResolver
+from dotenv import load_dotenv
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
+
+from code_review_agent.auth import (
+    OAuth2Middleware,
+    load_auth_config,
+    setup_auth_logging,
+)
+
+# 顯式載入 .env，讓 A2A_OIDC_* / REGISTRY_* 讀得到（別靠 import 副作用）。
+load_dotenv()
 
 HOST = os.environ.get("REGISTRY_HOST", "127.0.0.1")
 PORT = int(os.environ.get("REGISTRY_PORT", "8000"))
@@ -97,6 +108,21 @@ app = Starlette(
         Route("/register", register, methods=["POST"]),
     ]
 )
+
+# 跟 agent 同一套 middleware，兩點差異：
+#   - required_scope 清成 None：讀目錄只驗身分，不需要 code_review.invoke scope。
+#   - /register 走自己的 x-registry-token，豁免 OAuth。
+_auth_config = load_auth_config()
+if _auth_config is not None:
+    setup_auth_logging()
+    app.add_middleware(
+        OAuth2Middleware,
+        config=replace(_auth_config, required_scope=None),
+        public_path_prefixes=("/register",),
+    )
+    print(f"[registry] OAuth2/OIDC 驗證已啟用（issuer={_auth_config.issuer}）")
+else:
+    print("[registry] 未設 A2A_OIDC_*，GET /agents 以無認證模式開放")
 
 
 if __name__ == "__main__":

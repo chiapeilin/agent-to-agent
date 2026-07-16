@@ -16,6 +16,8 @@ from a2a.types import Role, SendMessageRequest
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
+from code_review_agent.auth import bearer_header, build_auth_interceptor
+
 load_dotenv()
 
 REGISTRY_URL = os.environ.get("REGISTRY_URL", "http://127.0.0.1:8000")
@@ -83,8 +85,8 @@ async def main() -> None:
         print("沒有輸入需求")
         return
 
-    # 2. 抓 registry 全部目錄
-    catalog = httpx.get(f"{REGISTRY_URL}/agents").json()
+    # 2. 抓 registry 全部目錄（registry 有啟用 OAuth 時自動帶 token）
+    catalog = httpx.get(f"{REGISTRY_URL}/agents", headers=await bearer_header()).json()
     if not catalog:
         print("registry 目錄是空的")
         return
@@ -100,9 +102,12 @@ async def main() -> None:
         return
     print(f"[router] 委派給：{chosen['name']} @ {chosen['url']}\n")
 
-    # 4. 連上選中的 agent，送出需求
+    # 4. 連上選中的 agent，送出需求（agent 有啟用 OAuth 時自動帶 token）
     config = ClientConfig(httpx_client=httpx.AsyncClient(timeout=httpx.Timeout(120.0)))
-    client = await create_client(chosen["url"], config)
+    auth = build_auth_interceptor()
+    client = await create_client(
+        chosen["url"], config, interceptors=[auth] if auth else None
+    )
     request = SendMessageRequest(
         message=new_message(
             parts=[new_text_part(text=request_text)], role=Role.ROLE_USER
