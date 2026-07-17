@@ -14,6 +14,7 @@ from a2a.client import ClientConfig, create_client
 from a2a.helpers import get_stream_response_text, new_message, new_text_part
 from a2a.types import Role, SendMessageRequest
 from dotenv import load_dotenv
+from loguru import logger
 from openai import AsyncOpenAI
 
 from code_review_agent.auth import bearer_header, build_auth_interceptor
@@ -49,7 +50,7 @@ def _parse_choice(content: str | None) -> dict:
 
 async def pick_agent(request_text: str, catalog: list[dict]) -> dict | None:
     """讓 LLM 讀 registry 目錄，依需求挑一個最合適的 agent；挑不到回 None。"""
-    print(f"[router] 詢問 LLM({ROUTER_MODEL})選擇 agent 中...")
+    logger.info("[router] 詢問 LLM({})選擇 agent 中...", ROUTER_MODEL)
     client = AsyncOpenAI(timeout=60)
     resp = await client.chat.completions.create(
         model=ROUTER_MODEL,
@@ -70,9 +71,9 @@ async def pick_agent(request_text: str, catalog: list[dict]) -> dict | None:
     choice = _parse_choice(resp.choices[0].message.content)
     url = choice.get("url")
     if not isinstance(url, str):
-        print("[router] LLM 沒有回傳有效的 url")
+        logger.warning("[router] LLM 沒有回傳有效的 url")
         return None
-    print(f"[router] LLM 選擇：{url}\n[router] 理由：{choice.get('reason')}\n")
+    logger.info("[router] LLM 選擇：{}｜理由：{}", url, choice.get("reason"))
 
     # 確認 url 真的在目錄裡
     return next((a for a in catalog if a["url"] == url), None)
@@ -82,25 +83,25 @@ async def main() -> None:
     # 1. 在 terminal 取得使用者需求
     request_text = read_request()
     if not request_text:
-        print("沒有輸入需求")
+        logger.warning("沒有輸入需求")
         return
 
     # 2. 抓 registry 全部目錄（registry 有啟用 OAuth 時自動帶 token）
     catalog = httpx.get(f"{REGISTRY_URL}/agents", headers=await bearer_header()).json()
     if not catalog:
-        print("registry 目錄是空的")
+        logger.warning("registry 目錄是空的")
         return
-    print(
-        f"\n[registry] 目錄有 {len(catalog)} 個 agent：{[a['name'] for a in catalog]}\n"
+    logger.info(
+        "[registry] 目錄有 {} 個 agent：{}", len(catalog), [a["name"] for a in catalog]
     )
 
     # 3. 依需求讓 LLM 挑合適的 agent
-    print(f"[需求] {request_text}\n")
+    logger.info("[需求] {}", request_text)
     chosen = await pick_agent(request_text, catalog)
     if chosen is None:
-        print("找不到合適的 agent 處理這個需求")
+        logger.warning("找不到合適的 agent 處理這個需求")
         return
-    print(f"[router] 委派給：{chosen['name']} @ {chosen['url']}\n")
+    logger.info("[router] 委派給：{} @ {}", chosen["name"], chosen["url"])
 
     # 4. 連上選中的 agent，送出需求（agent 有啟用 OAuth 時自動帶 token）
     config = ClientConfig(httpx_client=httpx.AsyncClient(timeout=httpx.Timeout(120.0)))

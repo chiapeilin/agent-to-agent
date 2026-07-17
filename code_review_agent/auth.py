@@ -10,7 +10,6 @@ client：用 client_credentials flow 換 token 並自動帶上。
     A2A_OAUTH_TOKEN_URL / _CLIENT_ID / _CLIENT_SECRET / _SCOPE     client 端取票
 """
 
-import logging
 import os
 import time
 from dataclasses import dataclass
@@ -26,28 +25,12 @@ from a2a.types import (
     StringList,
 )
 from jwt import PyJWKClient, PyJWKClientConnectionError
+from loguru import logger
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-logger = logging.getLogger(__name__)
-
 _SCHEME_NAME = "oidc"
-
-
-def setup_auth_logging() -> None:
-    """讓 auth 的 INFO log 印得出來（uvicorn 預設把 root 卡在 WARNING 會吞掉）。
-
-    只替本套件 logger 掛專屬 handler，避開 httpx / openai 的雜訊。entry point 呼叫一次。
-    """
-    pkg_logger = logging.getLogger("code_review_agent")
-    if pkg_logger.handlers:  # 已設過就不重複掛
-        return
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
-    pkg_logger.addHandler(handler)
-    pkg_logger.setLevel(logging.INFO)
-    pkg_logger.propagate = False
 
 
 class _IdPUnavailable(Exception):
@@ -182,11 +165,11 @@ class OAuth2Middleware:
             claims = await anyio.to_thread.run_sync(self._verify, token)
         except _IdPUnavailable as exc:
             # 合法 token 也會走到這：回 503 而非 401，免得把基礎設施故障誤判成 token 壞掉。
-            logger.error("OIDC 驗證失敗：連不上 IdP/JWKS：%s", exc)
+            logger.error("OIDC 驗證失敗：連不上 IdP/JWKS：{}", exc)
             await self._reject_unavailable(scope, receive, send, str(exc))
             return
         except Exception as exc:  # noqa: BLE001 - JWT 本身的驗證失敗都視為 401
-            logger.info("OIDC 驗證失敗：token 無效：%s", exc)
+            logger.info("OIDC 驗證失敗：token 無效：{}", exc)
             await self._reject(scope, receive, send, 401, "invalid_token", str(exc))
             return
 
@@ -197,7 +180,7 @@ class OAuth2Middleware:
 
         # 通過：記一筆讓 log 看得見認證有生效，並把 claims 傳給下游。
         logger.info(
-            "OIDC ✓ 通過 %s  sub=%s client=%s scope=[%s]",
+            "OIDC ✓ 通過 {}  sub={} client={} scope=[{}]",
             path,
             claims.get("sub", "?"),
             claims.get("azp") or claims.get("client_id", "?"),

@@ -13,6 +13,7 @@ from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
 from dotenv import load_dotenv
+from loguru import logger
 from starlette.applications import Starlette
 
 from code_review_agent.agent_executor import CodeReviewAgentExecutor
@@ -21,7 +22,6 @@ from code_review_agent.auth import (
     OAuth2Middleware,
     build_card_security,
     load_auth_config,
-    setup_auth_logging,
 )
 
 # 顯式載入 .env：認證設定（A2A_OIDC_*）沒讀到會靜默退回無認證，別靠 import 副作用。
@@ -93,9 +93,9 @@ async def _register_with_registry() -> None:
             await http.post(
                 f"{REGISTRY_URL}/register", json={"url": PUBLIC_URL}, headers=headers
             )
-        print(f"[agent] 已向 registry 註冊：{PUBLIC_URL} → {REGISTRY_URL}")
+        logger.info("[agent] 已向 registry 註冊：{} → {}", PUBLIC_URL, REGISTRY_URL)
     except Exception as exc:  # noqa: BLE001
-        print(f"[agent] 向 registry 註冊失敗（不影響 agent 運作）：{exc}")
+        logger.warning("[agent] 向 registry 註冊失敗（不影響 agent 運作）：{}", exc)
 
 
 @asynccontextmanager
@@ -122,11 +122,12 @@ def build_app() -> Starlette:
     app = Starlette(routes=routes, lifespan=_lifespan)
 
     if auth_config is not None:
-        setup_auth_logging()  # 讓每次驗過的「✓ 通過」印得出來
         app.add_middleware(OAuth2Middleware, config=auth_config)
-        print(f"[agent] OAuth2/OIDC 驗證已啟用（issuer={auth_config.issuer}）")
+        logger.info("[agent] OAuth2/OIDC 驗證已啟用（issuer={}）", auth_config.issuer)
     else:
-        print("[agent] 未設定 A2A_OIDC_ISSUER/AUDIENCE，以無認證模式啟動（僅適合本機開發）")
+        logger.warning(
+            "[agent] 未設定 A2A_OIDC_ISSUER/AUDIENCE，以無認證模式啟動（僅適合本機開發）"
+        )
 
     return app
 

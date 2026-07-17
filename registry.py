@@ -11,6 +11,7 @@ import httpx
 import uvicorn
 from a2a.client.card_resolver import A2ACardResolver
 from dotenv import load_dotenv
+from loguru import logger
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -18,7 +19,6 @@ from starlette.routing import Route
 from code_review_agent.auth import (
     OAuth2Middleware,
     load_auth_config,
-    setup_auth_logging,
 )
 
 # 顯式載入 .env，讓 A2A_OIDC_* / REGISTRY_* 讀得到（別靠 import 副作用）。
@@ -62,7 +62,7 @@ async def register(request):
     if not _is_valid_agent_url(url):
         return JSONResponse({"error": "invalid url"}, status_code=400)
     REGISTERED_URLS.add(url)
-    print(f"[registry] 收到註冊：{url}")
+    logger.info("[registry] 收到註冊：{}", url)
     return JSONResponse({"ok": True, "registered": url})
 
 
@@ -75,7 +75,7 @@ async def _resolve_cards() -> list[tuple[str, object]]:
                 card = await A2ACardResolver(http, url).get_agent_card()
                 resolved.append((url, card))
             except Exception as exc:  # noqa: BLE001
-                print(f"[registry] 跳過 {url}: {exc}")
+                logger.warning("[registry] 跳過 {}: {}", url, exc)
     return resolved
 
 
@@ -114,17 +114,16 @@ app = Starlette(
 #   - /register 走自己的 x-registry-token，豁免 OAuth。
 _auth_config = load_auth_config()
 if _auth_config is not None:
-    setup_auth_logging()
     app.add_middleware(
         OAuth2Middleware,
         config=replace(_auth_config, required_scope=None),
         public_path_prefixes=("/register",),
     )
-    print(f"[registry] OAuth2/OIDC 驗證已啟用（issuer={_auth_config.issuer}）")
+    logger.info("[registry] OAuth2/OIDC 驗證已啟用（issuer={}）", _auth_config.issuer)
 else:
-    print("[registry] 未設 A2A_OIDC_*，GET /agents 以無認證模式開放")
+    logger.warning("[registry] 未設 A2A_OIDC_*，GET /agents 以無認證模式開放")
 
 
 if __name__ == "__main__":
-    print(f"[registry] curated agents: {CURATED_URLS}")
+    logger.info("[registry] curated agents: {}", CURATED_URLS)
     uvicorn.run(app, host=HOST, port=PORT)

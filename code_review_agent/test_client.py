@@ -18,6 +18,7 @@ from a2a.client import ClientConfig, create_client
 from a2a.helpers import get_stream_response_text, new_message, new_text_part
 from a2a.types import Role, SendMessageRequest
 from dotenv import load_dotenv
+from loguru import logger
 
 from code_review_agent.auth import build_auth_interceptor
 
@@ -43,7 +44,7 @@ async def main() -> None:
         message=new_message(parts=[new_text_part(text=REQUEST)], role=Role.ROLE_USER)
     )
 
-    print(f"送出需求到 {AGENT_URL} ...\n")
+    logger.info("送出需求到 {} ...", AGENT_URL)
     async for event in client.send_message(request):
         # server 會依序推 task / status_update / artifact_update 等事件
         text = get_stream_response_text(event)
