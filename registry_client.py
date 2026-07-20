@@ -8,10 +8,17 @@ import asyncio
 import json
 import os
 import sys
+from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from a2a.client import ClientConfig, create_client
-from a2a.helpers import get_stream_response_text, new_message, new_text_part
+from a2a.helpers import (
+    get_stream_response_text,
+    new_message,
+    new_text_part,
+    new_url_part,
+)
 from a2a.types import Role, SendMessageRequest
 from dotenv import load_dotenv
 from loguru import logger
@@ -25,11 +32,52 @@ REGISTRY_URL = os.environ.get("REGISTRY_URL", "http://127.0.0.1:8000")
 ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "gpt-5.4-nano")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
+MEDIA_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
-def read_request() -> str:
+
+def is_url(value: str) -> bool:
+    """Return whether *value* is an HTTP(S) URL accepted by A2A url parts."""
+    return value.startswith(("http://", "https://"))
+
+
+def guess_media_type(url: str) -> str | None:
+    """Infer an image MIME type from a content URL's path when possible."""
+    return MEDIA_TYPES.get(Path(urlsplit(url).path).suffix.lower())
+
+
+def extract_content_url(argv: list[str]) -> tuple[list[str], str | None]:
+    """Extract ``--url URL`` / ``--url=URL`` from command-line arguments."""
+    rest: list[str] = []
+    content_url: str | None = None
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "--url":
+            if index + 1 >= len(argv):
+                raise ValueError("--url requires an HTTP(S) URL")
+            content_url = argv[index + 1].strip()
+            index += 2
+        elif arg.startswith("--url="):
+            content_url = arg.removeprefix("--url=").strip()
+            index += 1
+        else:
+            rest.append(arg)
+            index += 1
+    if content_url is not None and not is_url(content_url):
+        raise ValueError("--url must start with http:// or https://")
+    return rest, content_url
+
+
+def read_request(argv: list[str]) -> str:
     """需求來源：命令列參數，或互動輸入。"""
-    if len(sys.argv) > 1:
-        return " ".join(sys.argv[1:]).strip()
+    if argv:
+        return " ".join(argv).strip()
     return input("請輸入你的需求：\n> ").strip()
 
 
@@ -133,7 +181,12 @@ async def pick_agent(request_text: str, catalog: list[dict]) -> dict | None:
 
 async def main() -> None:
     # 1. 在 terminal 取得使用者需求
-    request_text = read_request()
+    try:
+        argv, content_url = extract_content_url(sys.argv[1:])
+    except ValueError as exc:
+        logger.error("{}", exc)
+        return
+    request_text = read_request(argv)
     if not request_text:
         logger.warning("沒有輸入需求")
         return
@@ -175,16 +228,25 @@ async def main() -> None:
     client = await create_client(
         chosen["url"], config, interceptors=[auth] if auth else None
     )
-    request = SendMessageRequest(
-        message=new_message(
-            parts=[new_text_part(text=request_text)], role=Role.ROLE_USER
+    parts = [new_text_part(text=request_text)]
+    if content_url:
+        parts.append(
+            new_url_part(
+                url=content_url,
+                media_type=guess_media_type(content_url),
+            )
         )
-    )
-    async for event in client.send_message(request):
-        text = get_stream_response_text(event)
-        if text:
-            print(text)
-    await client.close()
+        logger.info("[router] 附加內容 URL：{}", content_url)
+    request = SendMessageRequest(message=new_message(parts=parts, role=Role.ROLE_USER))
+    try:
+        async for event in client.send_message(request):
+            text = get_stream_response_text(event)
+            if text:
+                print(text)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[router] Agent 執行失敗：{}", exc)
+    finally:
+        await client.close()
 
 
 if __name__ == "__main__":

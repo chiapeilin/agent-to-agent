@@ -17,35 +17,34 @@ cp .env.example .env   # 填入 OPENAI_API_KEY
 
 建議分成 4 個角色各開一個終端機（獨立 process、不同 port）：
 
+1. Server agent
+
 ```bash
-# 1. 內建 code-review agent（:8001）
-uv run python -m code_review_agent
-#    看名片：curl http://127.0.0.1:8001/.well-known/agent-card.json
+uv run python -m code_review_agent      # 8001
 uv run python -m translation_agent      # 8002
 uv run python -m uppercase_agent        # 8003
 uv run python -m image_analyzer_agent   # 8004
+```
 
-# 2. Registry（:8000）
-uv run python registry.py
-#    查目錄：curl "http://127.0.0.1:8000/agents"
-#    查 semantic discover：curl -X POST http://127.0.0.1:8000/search -H 'content-type: application/json' -d '{"query":{"text":"review my Rust code"}}'
+這個腳本一鍵啟動四個 agent：
 
-# 3. Client
+```bash
+bash scripts/run_a2a_ard_agents.sh
+# 看名片：curl http://127.0.0.1:8001/.well-known/agent-card.json
+```
+
+2. Registry
+```bash
+uv run python registry.py.   # 8000
+# 查目錄：curl "http://127.0.0.1:8000/agents"
+```
+
+3. Client
+```bash
 uv run python registry_client.py                  # 互動輸入需求，經 registry 委派
 uv run python -m code_review_agent.test_client    # 或直連指定 agent
 ```
 
-### 一鍵啟動四個 agent
-
-```bash
-bash scripts/run_a2a_ard_agents.sh
-```
-
-這個腳本會一次啟動以下四個服務：
-- Code Review Agent: http://127.0.0.1:8001
-- Translation Agent: http://127.0.0.1:8002
-- Uppercase Agent: http://127.0.0.1:8003
-- Image Analyzer Agent: http://127.0.0.1:8004
 
 ## 認證（OAuth2 / OIDC，選用）
 
@@ -59,8 +58,8 @@ brew install colima docker
 colima start
 bash scripts/setup_keycloak.sh   # 建 realm/client/scope 並寫入 .env
 
-# 之後每次：確保 IdP 在跑，再照上面〈執行〉啟動
-docker start a2a-keycloak         # 若已停
+# 確保 IdP 在跑，再照上面〈執行〉啟動
+docker start a2a-keycloak         
 
 # 驗證有生效（兩者都應回 401）
 curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8001/    # agent
@@ -68,7 +67,7 @@ curl -s -o /dev/null -w "%{http_code}\n"      http://127.0.0.1:8000/agents # reg
 
 # 收工
 docker stop a2a-keycloak          # 保留資料，下次 docker start 續用
-colima stop                       # 完全不用容器時再關 VM
+colima stop                       # 不用容器時關 VM
 ```
 
 ## 檔案結構
@@ -92,7 +91,7 @@ uppercase_agent/        # 內建 uppercase sample agent
 ├── __main__.py
 └── server.py
 
-image_analyzer_agent/   # 內建 image analysis sample agent
+image_analyzer_agent/   # 內建 image analysis sample agent（支援 A2A url/raw image parts）
 ├── __main__.py
 └── server.py
 
