@@ -17,7 +17,7 @@ cp .env.example .env   # 填入 OPENAI_API_KEY
 
 建議分成 4 個角色各開一個終端機（獨立 process、不同 port）：
 
-1. Server agent
+### 1. Server agent
 
 ```bash
 uv run python -m code_review_agent      # 8001
@@ -33,16 +33,16 @@ bash scripts/run_a2a_ard_agents.sh
 # 看名片：curl http://127.0.0.1:8001/.well-known/agent-card.json
 ```
 
-2. Registry
+### 2. Registry
 ```bash
-uv run python registry.py.   # 8000
+uv run python registry.py    # 8000
 # 查目錄：curl "http://127.0.0.1:8000/agents"
 ```
 
-3. Client
+### 3. Client
 ```bash
 uv run python registry_client.py                  # 互動輸入需求，經 registry 委派
-uv run python -m code_review_agent.test_client    # 或直連指定 agent
+uv run python -m translation_agent.test_client    # 或直連指定 agent
 ```
 
 
@@ -72,32 +72,28 @@ colima stop                       # 不用容器時關 VM
 
 ## 檔案結構
 
+四個 agent 結構一致：`__main__.py`（AgentCard + server 進入點）、`agent_executor.py`（實際邏輯）、`test_client.py`（直連測試），app 組裝統一交給 `shared/server`。
+
 ```
-code_review_agent/      # 主要 code-review agent
+shared/                 # 共用模組
+├── auth.py             # OAuth2/OIDC 驗證（server middleware + client 取 token）
+├── server.py           # A2A app 組裝（card 安全宣告、路由、middleware）
+└── client.py           # 最小 A2A client：連線、送 parts、串流印回應
+
+code_review_agent/      # 主要 code-review agent（讀 repo 原始碼做 review）
 ├── __main__.py
 ├── agent_executor.py
-├── prompt.md
+├── prompt.md           # code-review 的審查標準（system prompt）
 └── test_client.py
 
-shared/                 # 共用 auth / helper 模組
-├── __init__.py
-└── auth.py
-
-translation_agent/      # 內建 translation sample agent
+translation_agent/      # 內建 sample agent（uppercase / image_analyzer 同結構）
 ├── __main__.py
-└── server.py
-
-uppercase_agent/        # 內建 uppercase sample agent
-├── __main__.py
-└── server.py
-
-image_analyzer_agent/   # 內建 image analysis sample agent（支援 A2A url/raw image parts）
-├── __main__.py
-└── server.py
+├── agent_executor.py
+└── test_client.py
 
 registry.py             # curated registry 服務
 registry_client.py      # 經 registry 找 agent 並委派的 router client
 scripts/setup_keycloak.sh  # 一鍵起本機 Keycloak 並產生 OAuth 設定
 ```
 
-改東西：審查標準改 `prompt.md`；LLM 後端改 `agent_executor.py`；名片/skill/port 改 `__main__.py`；收錄哪些 agent 改 `REGISTRY_AGENT_URLS`。
+改東西：審查標準改 `prompt.md`；agent 邏輯改 `agent_executor.py`；名片/skill/port 改 `__main__.py`；收錄哪些 agent 改 `REGISTRY_AGENT_URLS`。A2A client / server 的共用邏輯都在 `shared/`。

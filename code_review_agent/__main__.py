@@ -8,22 +8,14 @@ from contextlib import asynccontextmanager
 
 import httpx
 import uvicorn
-from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
-from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
 from dotenv import load_dotenv
 from loguru import logger
 from starlette.applications import Starlette
 
 from code_review_agent.agent_executor import CodeReviewAgentExecutor
-from shared.auth import (
-    AuthConfig,
-    OAuth2Middleware,
-    bearer_header,
-    build_card_security,
-    load_auth_config,
-)
+from shared.auth import AuthConfig, bearer_header, load_auth_config
+from shared.server import apply_card_security, build_agent_app
 
 # 顯式載入 .env：認證設定（A2A_OIDC_*）沒讀到會靜默退回無認證，別靠 import 副作用。
 load_dotenv()
@@ -71,15 +63,7 @@ def build_agent_card(auth_config: AuthConfig | None = None) -> AgentCard:
         ],
         skills=[skill],
     )
-
-    # 有啟用認證才在 card 宣告 securityScheme；client 端看到才會帶 token。
-    if auth_config is not None:
-        schemes, requirements = build_card_security(auth_config)
-        for name, scheme in schemes.items():
-            card.security_schemes[name].CopyFrom(scheme)
-        card.security_requirements.extend(requirements)
-
-    return card
+    return apply_card_security(card, auth_config)
 
 
 async def _register_with_registry() -> None:
@@ -107,31 +91,20 @@ async def _lifespan(app):
 
 
 def build_app() -> Starlette:
-    """把 executor 掛上 A2A server，開兩組路由；有設 OIDC 就掛上驗證 middleware。"""
+    """把 executor 掛上 A2A server（JSON-RPC 掛在 "/"），並在啟動時向 registry 報到。"""
     auth_config = load_auth_config()
     card = build_agent_card(auth_config)
-
-    request_handler = DefaultRequestHandler(
-        agent_executor=CodeReviewAgentExecutor(),
-        task_store=InMemoryTaskStore(),
-        agent_card=card,
-    )
-
-    routes = [
-        *create_agent_card_routes(card),
-        *create_jsonrpc_routes(request_handler, "/"),
-    ]
-    app = Starlette(routes=routes, lifespan=_lifespan)
-
     if auth_config is not None:
-        app.add_middleware(OAuth2Middleware, config=auth_config)
         logger.info("[agent] OAuth2/OIDC 驗證已啟用（issuer={}）", auth_config.issuer)
     else:
-        logger.warning(
-            "[agent] 未設定 A2A_OIDC_ISSUER/AUDIENCE，以無認證模式啟動（僅適合本機開發）"
-        )
-
-    return app
+        logger.warning("[agent] 未設 A2A_OIDC_*，以無認證模式啟動（僅適合本機開發）")
+    return build_agent_app(
+        card,
+        CodeReviewAgentExecutor(),
+        rpc_path="/",
+        auth_config=auth_config,
+        lifespan=_lifespan,
+    )
 
 
 if __name__ == "__main__":

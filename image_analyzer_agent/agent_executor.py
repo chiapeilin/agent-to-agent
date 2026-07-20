@@ -1,40 +1,23 @@
+"""Image Analyzer agent 的 A2A 執行層：
+解析 A2A text / url / raw parts → 呼叫 vision 模型 → 回影像描述 artifact。
+"""
+
 import base64
 import os
 import re
-from contextlib import asynccontextmanager
 
 import httpx
-import uvicorn
 from a2a.helpers import new_task_from_user_message, new_text_message, new_text_part
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
-from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
-from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
-from a2a.types import (
-    AgentCapabilities,
-    AgentCard,
-    AgentInterface,
-    AgentSkill,
-    TaskState,
-)
+from a2a.server.tasks import TaskUpdater
+from a2a.types import TaskState
 from dotenv import load_dotenv
 from google.protobuf.json_format import MessageToDict
 from openai import AsyncOpenAI
-from starlette.applications import Starlette
-
-from shared.auth import (
-    AuthConfig,
-    OAuth2Middleware,
-    build_card_security,
-    load_auth_config,
-)
 
 load_dotenv()
 
-HOST = os.environ.get("IMAGE_ANALYZER_HOST", "127.0.0.1")
-PORT = int(os.environ.get("IMAGE_ANALYZER_PORT", "8004"))
-PUBLIC_URL = os.environ.get("IMAGE_ANALYZER_PUBLIC_URL", f"http://{HOST}:{PORT}")
 MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
 TEXT_URL_PATTERN = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
 
@@ -114,40 +97,6 @@ async def local_image_as_data_uri(url: str) -> str | None:
     return f"data:{media_type};base64,{encoded}"
 
 
-def build_agent_card(auth_config: AuthConfig | None = None) -> AgentCard:
-    skill = AgentSkill(
-        id="image_analysis",
-        name="Image Analysis",
-        description="Analyze uploaded images and describe them.",
-        input_modes=["image/jpeg", "image/png", "text/plain"],
-        output_modes=["text/markdown"],
-        tags=["image", "vision", "analysis"],
-        examples=["describe this image"],
-    )
-    card = AgentCard(
-        name="Image Analyzer Agent",
-        description="Analyzes images using vision models",
-        version="0.1.0",
-        default_input_modes=["image/jpeg", "image/png", "text/plain"],
-        default_output_modes=["text/markdown"],
-        capabilities=AgentCapabilities(streaming=True),
-        supported_interfaces=[
-            AgentInterface(
-                protocol_binding="JSONRPC",
-                url=f"{PUBLIC_URL}/jsonrpc",
-                protocol_version="1.0",
-            )
-        ],
-        skills=[skill],
-    )
-    if auth_config is not None:
-        schemes, requirements = build_card_security(auth_config)
-        for name, scheme in schemes.items():
-            card.security_schemes[name].CopyFrom(scheme)
-        card.security_requirements.extend(requirements)
-    return card
-
-
 class ImageAnalyzerAgentExecutor(AgentExecutor):
     def __init__(self) -> None:
         super().__init__()
@@ -214,29 +163,3 @@ class ImageAnalyzerAgentExecutor(AgentExecutor):
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         raise NotImplementedError("Cancel is not supported.")
-
-
-@asynccontextmanager
-async def lifespan(app):
-    yield
-
-
-def build_app() -> Starlette:
-    auth_config = load_auth_config()
-    card = build_agent_card(auth_config)
-    request_handler = DefaultRequestHandler(
-        agent_executor=ImageAnalyzerAgentExecutor(),
-        task_store=InMemoryTaskStore(),
-        agent_card=card,
-    )
-    routes = [
-        *create_agent_card_routes(card),
-        *create_jsonrpc_routes(request_handler, "/jsonrpc"),
-    ]
-    app = Starlette(routes=routes, lifespan=lifespan)
-    if auth_config is not None:
-        app.add_middleware(OAuth2Middleware, config=auth_config)
-    return app
-
-
-app = build_app()
