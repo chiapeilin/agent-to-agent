@@ -164,8 +164,13 @@ async def main() -> None:
     display_name = chosen.get("displayName") or chosen.get("name") or chosen.get("url")
     logger.info("[router] 委派給：{} @ {}", display_name, chosen.get("url"))
 
-    # 4. 連上選中的 agent，送出需求（agent 有啟用 OAuth 時自動帶 token）
-    config = ClientConfig(httpx_client=httpx.AsyncClient(timeout=httpx.Timeout(120.0)))
+    # 4. 連上選中的 agent，送出需求。
+    agent_headers = await bearer_header()
+    config = ClientConfig(
+        httpx_client=httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0), headers=agent_headers
+        )
+    )
     auth = build_auth_interceptor()
     client = await create_client(
         chosen["url"], config, interceptors=[auth] if auth else None

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 import anyio
 import httpx
 import jwt
-from a2a.client import AuthInterceptor, ClientCallContext, CredentialService
+from a2a.client import ClientCallContext, CredentialService
+from a2a.client.interceptors import AfterArgs, BeforeArgs, ClientCallInterceptor
 from a2a.types import (
     OpenIdConnectSecurityScheme,
     SecurityRequirement,
@@ -260,9 +261,30 @@ def build_credentials() -> OAuth2Credentials | None:
     )
 
 
-def build_auth_interceptor() -> AuthInterceptor | None:
+class BearerAuthInterceptor(ClientCallInterceptor):
+    """每個 A2A 請求都注入 OAuth Bearer 憑證。"""
+
+    def __init__(self, credentials: CredentialService) -> None:
+        self._credentials = credentials
+
+    async def before(self, args: BeforeArgs) -> None:
+        token = await self._credentials.get_credentials(_SCHEME_NAME, args.context)
+        if not token:
+            return
+
+        if args.context is None:
+            args.context = ClientCallContext()
+        if args.context.service_parameters is None:
+            args.context.service_parameters = {}
+        args.context.service_parameters["Authorization"] = f"Bearer {token}"
+
+    async def after(self, args: AfterArgs) -> None:
+        return
+
+
+def build_auth_interceptor() -> BearerAuthInterceptor | None:
     creds = build_credentials()
-    return AuthInterceptor(creds) if creds else None
+    return BearerAuthInterceptor(creds) if creds else None
 
 
 async def bearer_header() -> dict[str, str]:
@@ -275,6 +297,7 @@ async def bearer_header() -> dict[str, str]:
 
 __all__ = [
     "AuthConfig",
+    "BearerAuthInterceptor",
     "OAuth2Credentials",
     "OAuth2Middleware",
     "build_auth_interceptor",

@@ -20,7 +20,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from shared.auth import OAuth2Middleware, load_auth_config
+from shared.auth import OAuth2Middleware, bearer_header, load_auth_config
 
 # 顯式載入 .env，讓 A2A_OIDC_* / REGISTRY_* 讀得到（別靠 import 副作用）。
 load_dotenv()
@@ -147,11 +147,13 @@ async def register(request):
 async def _fetch_agent_catalogs() -> list[dict]:
     """從每個 agent 的 agent-card.json 建立 catalog entries。"""
     entries: list[dict] = []
+    # Registry 對 agent 的呼叫也要驗證。
+    headers = await bearer_header()
     async with httpx.AsyncClient(timeout=10) as client:
         for agent_url in _all_urls():
             try:
                 card_url = f"{agent_url.rstrip('/')}/.well-known/agent-card.json"
-                response = await client.get(card_url)
+                response = await client.get(card_url, headers=headers)
                 if response.status_code != 200:
                     logger.warning(
                         "[registry] 跳過 {}: HTTP {}", agent_url, response.status_code

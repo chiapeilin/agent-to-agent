@@ -20,6 +20,7 @@ from code_review_agent.agent_executor import CodeReviewAgentExecutor
 from shared.auth import (
     AuthConfig,
     OAuth2Middleware,
+    bearer_header,
     build_card_security,
     load_auth_config,
 )
@@ -85,7 +86,8 @@ async def _register_with_registry() -> None:
     """啟動時向 registry 報到。registry 掛了也不影響 agent 自己。"""
     if not REGISTRY_URL:
         return
-    headers = {}
+    # 內部呼叫一律帶 Bearer。
+    headers = await bearer_header()
     if REGISTRY_REGISTER_TOKEN:
         headers["x-registry-token"] = REGISTRY_REGISTER_TOKEN
     try:

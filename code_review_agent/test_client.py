@@ -20,7 +20,7 @@ from a2a.types import Role, SendMessageRequest
 from dotenv import load_dotenv
 from loguru import logger
 
-from shared.auth import build_auth_interceptor
+from shared.auth import bearer_header, build_auth_interceptor
 
 # 讀取 repo 根目錄的 .env，讓 A2A_OAUTH_* 免手動 export
 load_dotenv()
@@ -31,7 +31,13 @@ REQUEST = "幫我 review 現有的程式碼架構"
 
 
 async def main() -> None:
-    config = ClientConfig(httpx_client=httpx.AsyncClient(timeout=httpx.Timeout(120.0)))
+    # Card 未宣告 security requirements 時也帶 Bearer。
+    headers = await bearer_header()
+    config = ClientConfig(
+        httpx_client=httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0), headers=headers
+        )
+    )
 
     # 有設 OAuth 環境變數就掛 interceptor，token 會自動加到每次請求
     auth = build_auth_interceptor()

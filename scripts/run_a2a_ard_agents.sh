@@ -3,10 +3,23 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-export OPENAI_API_KEY="${OPENAI_API_KEY:-$(grep '^OPENAI_API_KEY=' "$ROOT_DIR/.env" 2>/dev/null | cut -d= -f2-)}"
+# 背景 agent 與 router 使用相同設定。
+if [ -f "$ROOT_DIR/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$ROOT_DIR/.env"
+  set +a
+fi
 export OPENAI_MODEL="${OPENAI_MODEL:-gpt-4o}"
 
 cd "$ROOT_DIR"
+
+for port in 8001 8002 8003 8004; do
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "✗ Port $port is already in use. Stop the existing agent before starting a new one." >&2
+    exit 1
+  fi
+done
 
 uv run python -m code_review_agent > /tmp/code_review_agent.log 2>&1 &
 uv run python -m translation_agent > /tmp/translation_agent.log 2>&1 &

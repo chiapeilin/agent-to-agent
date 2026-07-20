@@ -79,23 +79,15 @@ A2A_OAUTH_SCOPE=$SCOPE
 EOF
 )
 
-echo "$BLOCK"
-
 if [ -f "$ENV_FILE" ]; then
   tmp_file=$(mktemp)
   awk '
-    BEGIN { in_block=0 }
-    /^# ── 由 scripts\/setup_keycloak\.sh 產生 ──$/ { in_block=1; next }
-    in_block && /^(A2A_OIDC_|A2A_OAUTH_|A2A_REQUIRED_SCOPE)/ { next }
-    in_block && /^$/ { next }
-    {
-      if (in_block && $0 ~ /^(A2A_OIDC_|A2A_OAUTH_|A2A_REQUIRED_SCOPE)/) next
-      print
-      in_block=0
-    }
-    END { }
+    /^# ── 由 scripts\/setup_keycloak\.sh 產生 ──$/ { next }
+    /^(A2A_OIDC_|A2A_OAUTH_|A2A_REQUIRED_SCOPE)/ { next }
+    /^$/ { blank_lines = blank_lines $0 ORS; next }
+    { printf "%s", blank_lines; blank_lines = ""; print }
   ' "$ENV_FILE" > "$tmp_file"
-  { cat "$tmp_file"; printf '\n%s\n' "$BLOCK"; } > "$ENV_FILE"
+  { cat "$tmp_file"; printf '%s\n' "$BLOCK"; } > "$ENV_FILE"
   rm -f "$tmp_file"
 else
   printf '%s\n' "$BLOCK" > "$ENV_FILE"
