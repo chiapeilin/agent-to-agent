@@ -29,7 +29,7 @@ PORT = int(os.environ.get("REGISTRY_PORT", "8000"))
 EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 CATALOG_PATH = Path(__file__).with_name("ai-catalog.json")
 
-# curated 白名單：registry 只會 pull（主動抓名片）列在這裡的 agent。去重保序。
+# curated 白名單：registry 只 pull 這裡列的 agent。去重保序。
 DEFAULT_AGENT_URLS = (
     "http://127.0.0.1:8001,"  # code review agent
     "http://127.0.0.1:8002,"  # translation agent
@@ -76,13 +76,15 @@ def _tokenize(text: str) -> list[str]:
     return [token for token in _normalize_text(text).split() if token]
 
 
-def rank_catalog_entries(entries: list[dict], query_text: str) -> list[dict]:
-    """以關鍵字重疊做回退排序，讓沒有 embedding 時也能選出最相似候選。"""
+def rank_catalog_entries(
+    entries: list[dict], query_text: str
+) -> list[tuple[dict, float]]:
+    """關鍵字重疊回退排序，回傳 (entry, score) 由高到低（無 embedding 時用）。"""
     if not entries:
         return []
 
     query_tokens = set(_tokenize(query_text))
-    ranked: list[tuple[float, dict]] = []
+    ranked: list[tuple[dict, float]] = []
     for entry in entries:
         combined_text = " ".join(
             [
@@ -97,10 +99,10 @@ def rank_catalog_entries(entries: list[dict], query_text: str) -> list[dict]:
             1 for tag in entry.get("tags", []) if _normalize_text(tag) in query_tokens
         )
         score = overlap + tag_bonus * 2
-        ranked.append((score, entry))
+        ranked.append((entry, float(score)))
 
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    return [entry for _, entry in ranked]
+    ranked.sort(key=lambda item: item[1], reverse=True)
+    return ranked
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -176,7 +178,8 @@ async def search_handler(request):
     if not entries:
         return JSONResponse({"results": []})
 
-    ranked_entries = rank_catalog_entries(entries, query_text)
+    # 預設用關鍵字重疊算分；embedding 成功就以 cosine 相似度覆蓋。
+    ranked = rank_catalog_entries(entries, query_text)
 
     try:
         client = AsyncOpenAI()
@@ -190,36 +193,31 @@ async def search_handler(request):
         )
         vectors = [item.embedding for item in embeddings_response.data]
         query_vector = vectors[-1]
-        similarities = [
-            _cosine_similarity(query_vector, vector) for vector in vectors[:-1]
-        ]
-        ranked_pairs = sorted(
-            zip(entries, similarities),
+        ranked = sorted(
+            (
+                (entry, _cosine_similarity(query_vector, vector))
+                for entry, vector in zip(entries, vectors[:-1])
+            ),
             key=lambda item: item[1],
             reverse=True,
         )
-        ranked_entries = [entry for entry, _ in ranked_pairs]
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "[registry] embedding search failed, fallback to keyword search: {}", exc
         )
 
-    results = []
-    for entry in ranked_entries[:3]:
-        results.append(
-            {
-                "identifier": entry.get("identifier", ""),
-                "displayName": entry.get("displayName", "Unknown"),
-                "description": entry.get("description", ""),
-                "url": entry.get("url", ""),
-                "type": entry.get("type", "unknown"),
-                "score": 0.0,
-                "tags": entry.get("tags", []),
-            }
-        )
-
-    if results and len(results) == 3:
-        results[0]["score"] = 1.0
+    results = [
+        {
+            "identifier": entry.get("identifier", ""),
+            "displayName": entry.get("displayName", "Unknown"),
+            "description": entry.get("description", ""),
+            "url": entry.get("url", ""),
+            "type": entry.get("type", "unknown"),
+            "score": round(float(score), 6),
+            "tags": entry.get("tags", []),
+        }
+        for entry, score in ranked[:3]
+    ]
     return JSONResponse({"results": results})
 
 
@@ -254,8 +252,7 @@ app = Starlette(
     ]
 )
 
-# 跟 agent 同一套 middleware，但 required_scope 清成 None：
-# 讀目錄只驗身分，不需要 code_review.invoke scope。
+# 同 agent 的 middleware，但 required_scope=None：讀目錄只驗身分，不查 scope。
 _auth_config = load_auth_config()
 if _auth_config is not None:
     app.add_middleware(

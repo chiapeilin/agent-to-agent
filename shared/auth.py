@@ -25,7 +25,7 @@ _SCHEME_NAME = "oidc"
 
 
 class _IdPUnavailable(Exception):
-    """取不到 JWKS / 連不上 IdP —— 基礎設施問題，與 token 本身無關（回 503）。"""
+    """取不到 JWKS / 連不上 IdP：基礎設施問題（回 503）。"""
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ class AuthConfig:
 
 
 def load_auth_config() -> AuthConfig | None:
-    """有設 issuer + audience 才回傳設定；否則回 None（= 關閉認證）。"""
+    """有 issuer + audience 才回設定，否則回 None（關閉認證）。"""
     issuer = os.environ.get("A2A_OIDC_ISSUER")
     audience = os.environ.get("A2A_OIDC_AUDIENCE")
     if not (issuer and audience):
@@ -67,7 +67,7 @@ def load_auth_config() -> AuthConfig | None:
 def build_card_security(
     config: AuthConfig,
 ) -> tuple[dict[str, SecurityScheme], list[SecurityRequirement]]:
-    """宣告 AgentCard 的 OIDC scheme；client 端的 AuthInterceptor 看到就會自動帶 token。"""
+    """宣告 AgentCard 的 OIDC scheme，client 看到就會自動帶 token。"""
     scheme = SecurityScheme(
         open_id_connect_security_scheme=OpenIdConnectSecurityScheme(
             description="OIDC / OAuth2 Bearer JWT。請帶 Authorization: Bearer <token>。",
@@ -80,7 +80,7 @@ def build_card_security(
 
 
 def _granted_scopes(claims: dict) -> list[str]:
-    """從 claims 取出已授予的 scope。相容 `scope`（空白分隔字串）與 `scp`（陣列）。"""
+    """取出已授予的 scope，相容 `scope`（字串）與 `scp`（陣列）。"""
     raw = claims.get("scope") or claims.get("scp")
     if isinstance(raw, str):
         return raw.split()
@@ -90,7 +90,7 @@ def _granted_scopes(claims: dict) -> list[str]:
 
 
 class OAuth2Middleware:
-    """純 ASGI middleware：驗 JWT + 查 scope。放行則原樣轉給內層（不緩衝 SSE 串流）。"""
+    """ASGI middleware：驗 JWT + 查 scope，放行則原樣轉給內層（不緩衝 SSE）。"""
 
     def __init__(
         self,
@@ -249,19 +249,31 @@ class OAuth2Credentials(CredentialService):
         return self._token
 
 
+# 憑證只建立一次並重用，token 快取才能在多次呼叫間命中。
+_credentials: OAuth2Credentials | None = None
+_credentials_ready = False
+
+
 def build_credentials() -> OAuth2Credentials | None:
+    """建立（並快取）client_credentials 憑證；缺必要環境變數則回 None。"""
+    global _credentials, _credentials_ready
+    if _credentials_ready:
+        return _credentials
+
+    _credentials_ready = True
     token_url = os.environ.get("A2A_OAUTH_TOKEN_URL")
     client_id = os.environ.get("A2A_OAUTH_CLIENT_ID")
     client_secret = os.environ.get("A2A_OAUTH_CLIENT_SECRET")
     if not (token_url and client_id and client_secret):
         return None
 
-    return OAuth2Credentials(
+    _credentials = OAuth2Credentials(
         token_url=token_url,
         client_id=client_id,
         client_secret=client_secret,
         scope=os.environ.get("A2A_OAUTH_SCOPE"),
     )
+    return _credentials
 
 
 class BearerAuthInterceptor(ClientCallInterceptor):

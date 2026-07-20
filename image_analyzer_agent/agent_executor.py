@@ -5,6 +5,7 @@
 import base64
 import os
 import re
+from urllib.parse import urlsplit
 
 import httpx
 from a2a.helpers import new_task_from_user_message, new_text_message, new_text_part
@@ -14,6 +15,7 @@ from a2a.server.tasks import TaskUpdater
 from a2a.types import TaskState
 from dotenv import load_dotenv
 from google.protobuf.json_format import MessageToDict
+from loguru import logger
 from openai import AsyncOpenAI
 
 load_dotenv()
@@ -23,15 +25,20 @@ TEXT_URL_PATTERN = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
 
 
 def _preview(text: str, limit: int = 80) -> str:
-    """Truncate long content for A2A-ARD-compatible part diagnostics."""
+    """截斷過長內容，供 A2A-ARD 相容的 part 診斷輸出。"""
     text = text.replace("\n", "\\n")
     if len(text) <= limit:
         return repr(text)
     return repr(text[:limit]) + f"...(+{len(text) - limit} chars)"
 
 
+def _is_local_url(url: str) -> bool:
+    """判斷是否為本機位址（依 hostname 精確比對，避免子字串誤判）。"""
+    return (urlsplit(url).hostname or "").lower() in {"localhost", "127.0.0.1", "::1"}
+
+
 def describe_part(index: int, part) -> str:
-    """Describe one A2A ``Part`` using the same fields as A2A-ARD."""
+    """用與 A2A-ARD 相同的欄位描述單一 A2A ``Part``。"""
     kind = part.WhichOneof("content")
     fields = [f"type={kind or 'UNSET'}"]
     if kind == "text":
@@ -49,17 +56,16 @@ def describe_part(index: int, part) -> str:
 
 
 def message_parts_to_openai_content(parts) -> tuple[list[str], list[dict]]:
-    """Convert A2A text, URL, and raw image parts to OpenAI vision content.
+    """把 A2A 的 text / URL / raw 影像 parts 轉成 OpenAI vision 內容。
 
-    A2A ``Part`` stores its payload in a protobuf ``oneof``. URL parts use
-    ``url`` and uploaded files use ``raw``; neither is represented by the
-    legacy ``data`` field.
+    A2A ``Part`` 的內容存在 protobuf ``oneof`` 裡：URL part 用 ``url``、
+    上傳檔案用 ``raw``，兩者都不是舊的 ``data`` 欄位。
     """
     text_parts: list[str] = []
     image_parts: list[dict] = []
     for index, part in enumerate(parts):
         content_type = part.WhichOneof("content")
-        print(describe_part(index, part))
+        logger.info("{}", describe_part(index, part))
         if content_type == "text":
             text_parts.append(part.text)
         elif content_type == "url":
@@ -79,12 +85,12 @@ def message_parts_to_openai_content(parts) -> tuple[list[str], list[dict]]:
 
 
 def image_urls_from_text(text_parts: list[str]) -> list[str]:
-    """Return HTTP(S) URLs embedded in text parts, as A2A-ARD does."""
+    """回傳文字 parts 中夾帶的 HTTP(S) URL，比照 A2A-ARD 的做法。"""
     return TEXT_URL_PATTERN.findall(" ".join(text_parts))
 
 
 async def local_image_as_data_uri(url: str) -> str | None:
-    """Fetch a local image so OpenAI can receive bytes it cannot fetch itself."""
+    """抓取本機圖片並轉成 data URI，讓 OpenAI 拿到它自己抓不到的 bytes。"""
     try:
         async with httpx.AsyncClient() as http_client:
             response = await http_client.get(url, timeout=10.0)
@@ -117,11 +123,10 @@ class ImageAnalyzerAgentExecutor(AgentExecutor):
             context.message.parts or []
         )
 
-        # Match A2A-ARD's compatibility fallback for clients that place an
-        # image URL in plain text instead of sending a formal A2A url part.
+        # 回退：有些 client 把圖片 URL 放進純文字，而非正式的 A2A url part。
         if not image_parts:
             for url in image_urls_from_text(text_parts):
-                if "localhost" in url or "127.0.0.1" in url:
+                if _is_local_url(url):
                     data_uri = await local_image_as_data_uri(url)
                     if data_uri:
                         image_parts.append(

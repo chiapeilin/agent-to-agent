@@ -11,16 +11,13 @@ from a2a.helpers import get_stream_response_text, new_message
 from a2a.types import Part, Role, SendMessageRequest
 from loguru import logger
 
-from shared.auth import bearer_header, build_auth_interceptor
+from shared.auth import build_auth_interceptor
 
 
 async def send_and_print(agent_url: str, parts: Sequence[Part]) -> None:
     """連上 *agent_url*，送出 *parts* 組成的一則 user message，把串流回應印到 stdout。"""
-    # Card 未宣告 security 時也帶 Bearer；create_client 會自動抓 agent-card.json。
-    headers = await bearer_header()
-    config = ClientConfig(
-        httpx_client=httpx.AsyncClient(timeout=httpx.Timeout(120.0), headers=headers)
-    )
+    # Bearer 一律由 interceptor 注入（card 未宣告 security 時也會帶），不再另外塞 httpx header。
+    config = ClientConfig(httpx_client=httpx.AsyncClient(timeout=httpx.Timeout(120.0)))
     auth = build_auth_interceptor()
     client = await create_client(
         agent_url, config, interceptors=[auth] if auth else None

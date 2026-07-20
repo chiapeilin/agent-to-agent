@@ -1,7 +1,6 @@
-"""Router client：收到文字需求 → 先上 registry 做 semantic discover / top-3 選候選 → 再讓 LLM 從這三個挑一個 → 委派。
+"""Router client：需求 → registry 取 top-3 候選 → LLM 挑一個 → 委派。
 
-先開好 agent 與 registry 再跑：
-    uv run python registry_client.py
+先開好 agent 與 registry 再跑：uv run python registry_client.py
 """
 
 import asyncio
@@ -42,17 +41,17 @@ MEDIA_TYPES = {
 
 
 def is_url(value: str) -> bool:
-    """Return whether *value* is an HTTP(S) URL accepted by A2A url parts."""
+    """判斷 *value* 是否為 A2A url part 接受的 HTTP(S) URL。"""
     return value.startswith(("http://", "https://"))
 
 
 def guess_media_type(url: str) -> str | None:
-    """Infer an image MIME type from a content URL's path when possible."""
+    """盡量從內容 URL 的路徑副檔名推斷影像 MIME type。"""
     return MEDIA_TYPES.get(Path(urlsplit(url).path).suffix.lower())
 
 
 def extract_content_url(argv: list[str]) -> tuple[list[str], str | None]:
-    """Extract ``--url URL`` / ``--url=URL`` from command-line arguments."""
+    """從命令列參數中取出 ``--url URL`` / ``--url=URL``。"""
     rest: list[str] = []
     content_url: str | None = None
     index = 0
@@ -89,7 +88,7 @@ ROUTER_SYSTEM_PROMPT = (
 
 
 def _parse_choice(content: str | None) -> dict:
-    """解析 LLM 回傳的 JSON；內容為空或不合法都當成空 dict（視為選不出）。"""
+    """解析 LLM 回傳的 JSON；空或不合法都當空 dict（視為選不出）。"""
     try:
         choice = json.loads(content) if content else {}
     except json.JSONDecodeError:
@@ -193,7 +192,7 @@ async def main() -> None:
 
     logger.info("[需求] {}", request_text)
 
-    # 2. 先經 registry /search 做 semantic discover，拿出最相似的 3 個 agent
+    # 2. 經 registry /search 取最相似的 3 個候選
     candidates = await discover_candidates(request_text)
     if not candidates:
         logger.warning("registry 沒有找到可用候選 agent")
@@ -208,7 +207,7 @@ async def main() -> None:
         ],
     )
 
-    # 3. 依需求讓 LLM 從這三個候選中挑合適的 agent
+    # 3. 讓 LLM 從候選中挑一個
     chosen = await pick_agent(request_text, candidates)
     if chosen is None:
         logger.warning("找不到合適的 agent 處理這個需求")
@@ -217,12 +216,9 @@ async def main() -> None:
     display_name = chosen.get("displayName") or chosen.get("name") or chosen.get("url")
     logger.info("[router] 委派給：{} @ {}", display_name, chosen.get("url"))
 
-    # 4. 連上選中的 agent，送出需求。
-    agent_headers = await bearer_header()
+    # 4. 連上選中的 agent 送出需求（Bearer 交給 interceptor 注入）。
     config = ClientConfig(
-        httpx_client=httpx.AsyncClient(
-            timeout=httpx.Timeout(120.0), headers=agent_headers
-        )
+        httpx_client=httpx.AsyncClient(timeout=httpx.Timeout(120.0))
     )
     auth = build_auth_interceptor()
     client = await create_client(

@@ -19,12 +19,27 @@ from a2a.types import TaskState
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-# 讀取 repo 根目錄的 .env（OPENAI_API_KEY 等），須在建立 OpenAI client 前完成。
+# 須在建立 OpenAI client 前載入 .env（OPENAI_API_KEY 等）。
 load_dotenv()
 
-SYSTEM_PROMPT = (Path(__file__).parent / "prompt.md").read_text(encoding="utf-8")
+_PROMPT_PATH = Path(__file__).parent / "prompt.md"
 REPO_PATH = os.environ.get("CODE_REVIEW_REPO_PATH", ".")
 MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
+
+_system_prompt: str | None = None
+
+
+def _load_system_prompt() -> str:
+    """延後讀取並快取 system prompt；缺檔時給明確錯誤，避免 import 期 crash。"""
+    global _system_prompt
+    if _system_prompt is None:
+        try:
+            _system_prompt = _PROMPT_PATH.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(
+                f"讀不到 code review 的 system prompt：{_PROMPT_PATH}（{exc}）"
+            ) from exc
+    return _system_prompt
 
 
 class CodeReviewAgent:
@@ -38,7 +53,7 @@ class CodeReviewAgent:
         resp = await self.client.chat.completions.create(
             model=MODEL,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": _load_system_prompt()},
                 {
                     "role": "user",
                     "content": (
@@ -77,7 +92,7 @@ def _read_reviewable(rel: str) -> str | None:
 
 
 def _collect_code() -> str:
-    """收集 REPO_PATH 下可 review 的文字檔（git 追蹤中、尊重 .gitignore），組成給 LLM 的內容。"""
+    """收集 REPO_PATH 下可 review 的文字檔（git 追蹤、尊重 .gitignore）給 LLM。"""
     listed = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
         cwd=REPO_PATH, capture_output=True, text=True, check=False,

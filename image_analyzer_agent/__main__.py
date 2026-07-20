@@ -6,12 +6,7 @@
 import os
 
 import uvicorn
-from a2a.types import (
-    AgentCapabilities,
-    AgentCard,
-    AgentInterface,
-    AgentSkill,
-)
+from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
 from dotenv import load_dotenv
 from starlette.applications import Starlette
 
