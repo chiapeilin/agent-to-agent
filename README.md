@@ -15,21 +15,37 @@ cp .env.example .env   # 填入 OPENAI_API_KEY
 
 ## 執行
 
-三個角色各開一個終端機（獨立 process、不同 port）：
+建議分成 4 個角色各開一個終端機（獨立 process、不同 port）：
 
 ```bash
-# 1. Agent（:9999）
+# 1. 內建 code-review agent（:8001）
 uv run python -m code_review_agent
-#    看名片：curl http://127.0.0.1:9999/.well-known/agent-card.json
+#    看名片：curl http://127.0.0.1:8001/.well-known/agent-card.json
+uv run python -m translation_agent      # 8002
+uv run python -m uppercase_agent        # 8003
+uv run python -m image_analyzer_agent   # 8004
 
 # 2. Registry（:8000）
-REGISTRY_AGENT_URLS="http://127.0.0.1:9999" uv run python registry.py
-#    查目錄：curl "http://127.0.0.1:8000/agents?skill=code_review"
+uv run python registry.py
+#    查目錄：curl "http://127.0.0.1:8000/agents"
+#    查 semantic discover：curl -X POST http://127.0.0.1:8000/search -H 'content-type: application/json' -d '{"query":{"text":"review my Rust code"}}'
 
 # 3. Client
 uv run python registry_client.py                  # 互動輸入需求，經 registry 委派
 uv run python -m code_review_agent.test_client    # 或直連指定 agent
 ```
+
+### 一鍵啟動四個 agent
+
+```bash
+bash scripts/run_a2a_ard_agents.sh
+```
+
+這個腳本會一次啟動以下四個服務：
+- Code Review Agent: http://127.0.0.1:8001
+- Translation Agent: http://127.0.0.1:8002
+- Uppercase Agent: http://127.0.0.1:8003
+- Image Analyzer Agent: http://127.0.0.1:8004
 
 ## 認證（OAuth2 / OIDC，選用）
 
@@ -38,7 +54,7 @@ uv run python -m code_review_agent.test_client    # 或直連指定 agent
 本機用 [Keycloak](https://www.keycloak.org/) 當 IdP、[Colima](https://github.com/abiosoft/colima) 當容器：
 
 ```bash
-# 前置（各裝一次）
+# 前置
 brew install colima docker
 colima start
 bash scripts/setup_keycloak.sh   # 建 realm/client/scope 並寫入 .env
@@ -47,7 +63,7 @@ bash scripts/setup_keycloak.sh   # 建 realm/client/scope 並寫入 .env
 docker start a2a-keycloak         # 若已停
 
 # 驗證有生效（兩者都應回 401）
-curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:9999/    # agent
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8001/    # agent
 curl -s -o /dev/null -w "%{http_code}\n"      http://127.0.0.1:8000/agents # registry
 
 # 收工
@@ -58,12 +74,28 @@ colima stop                       # 完全不用容器時再關 VM
 ## 檔案結構
 
 ```
-code_review_agent/
-├── __main__.py         # AgentCard/AgentSkill 定義 + 起 A2A server（含 self-registration）
-├── agent_executor.py   # A2A 協定黏著層 + 讀 repo、呼叫 LLM 的邏輯
-├── auth.py             # OAuth2/OIDC 驗證 middleware + Agent Card security 宣告
-├── prompt.md           # code-review skill 本體（LLM 的 system prompt）
-└── test_client.py      # 直連 agent 的測試 client
+code_review_agent/      # 主要 code-review agent
+├── __main__.py
+├── agent_executor.py
+├── prompt.md
+└── test_client.py
+
+shared/                 # 共用 auth / helper 模組
+├── __init__.py
+└── auth.py
+
+translation_agent/      # 內建 translation sample agent
+├── __main__.py
+└── server.py
+
+uppercase_agent/        # 內建 uppercase sample agent
+├── __main__.py
+└── server.py
+
+image_analyzer_agent/   # 內建 image analysis sample agent
+├── __main__.py
+└── server.py
+
 registry.py             # curated registry 服務
 registry_client.py      # 經 registry 找 agent 並委派的 router client
 scripts/setup_keycloak.sh  # 一鍵起本機 Keycloak 並產生 OAuth 設定

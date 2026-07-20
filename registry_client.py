@@ -1,4 +1,4 @@
-"""Router client：收到文字需求 → 上 registry 拿目錄 → 讓 LLM 依 skill 描述挑 agent → 委派。
+"""Router client：收到文字需求 → 先上 registry 做 semantic discover / top-3 選候選 → 再讓 LLM 從這三個挑一個 → 委派。
 
 先開好 agent 與 registry 再跑：
     uv run python registry_client.py
@@ -17,12 +17,13 @@ from dotenv import load_dotenv
 from loguru import logger
 from openai import AsyncOpenAI
 
-from code_review_agent.auth import bearer_header, build_auth_interceptor
+from shared.auth import bearer_header, build_auth_interceptor
 
 load_dotenv()
 
 REGISTRY_URL = os.environ.get("REGISTRY_URL", "http://127.0.0.1:8000")
 ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "gpt-5.4-nano")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 
 def read_request() -> str:
@@ -48,27 +49,78 @@ def _parse_choice(content: str | None) -> dict:
     return choice if isinstance(choice, dict) else {}
 
 
-async def pick_agent(request_text: str, catalog: list[dict]) -> dict | None:
-    """讓 LLM 讀 registry 目錄，依需求挑一個最合適的 agent；挑不到回 None。"""
-    logger.info("[router] 詢問 LLM({})選擇 agent 中...", ROUTER_MODEL)
-    client = AsyncOpenAI(timeout=60)
-    resp = await client.chat.completions.create(
-        model=ROUTER_MODEL,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"使用者需求：\n{request_text}\n\n"
-                    f"候選 agent（含 skills 描述）：\n"
-                    f"{json.dumps(catalog, ensure_ascii=False, indent=2)}"
-                ),
-            },
-        ],
-    )
+async def discover_candidates(request_text: str) -> list[dict]:
+    """先調 registry /search，拿到最相似的 3 個 agent。"""
+    headers = await bearer_header()
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            response = await client.post(
+                f"{REGISTRY_URL}/search",
+                json={"query": {"text": request_text}},
+                headers=headers,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            results = payload.get("results", [])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[router] /search 失敗，改用 /agents 兜底：{}", exc)
+            results = []
 
-    choice = _parse_choice(resp.choices[0].message.content)
+        if not results:
+            try:
+                response = await client.get(f"{REGISTRY_URL}/agents", headers=headers)
+                response.raise_for_status()
+                catalog = response.json()
+                return [
+                    {
+                        "url": item.get("url"),
+                        "displayName": item.get("name"),
+                        "description": item.get("description", ""),
+                        "tags": [skill.get("id") for skill in item.get("skills", [])],
+                    }
+                    for item in catalog[:3]
+                ]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[router] /agents 也失敗：{}", exc)
+                return []
+
+    return list(results[:3])
+
+
+async def pick_agent(request_text: str, catalog: list[dict]) -> dict | None:
+    """讓 LLM 從 top-3 候選中挑一個最合適的 agent；挑不到回 None。"""
+    if not OPENAI_API_KEY:
+        logger.error(
+            "[router] 缺少 OPENAI_API_KEY，請先在 .env 中填入有效的 OpenAI API key"
+        )
+        return None
+
+    logger.info(
+        "[router] 詢問 LLM({})從 {} 個候選中選擇 agent...", ROUTER_MODEL, len(catalog)
+    )
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=60)
+    try:
+        resp = await client.chat.completions.create(
+            model=ROUTER_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"使用者需求：\n{request_text}\n\n"
+                        f"候選 agent（含 skills 描述）：\n"
+                        f"{json.dumps(catalog, ensure_ascii=False, indent=2)}"
+                    ),
+                },
+            ],
+        )
+
+        choice = _parse_choice(resp.choices[0].message.content)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[router] OpenAI 呼叫失敗：{}", exc)
+        return None
+
     url = choice.get("url")
     if not isinstance(url, str):
         logger.warning("[router] LLM 沒有回傳有效的 url")
@@ -76,7 +128,7 @@ async def pick_agent(request_text: str, catalog: list[dict]) -> dict | None:
     logger.info("[router] LLM 選擇：{}｜理由：{}", url, choice.get("reason"))
 
     # 確認 url 真的在目錄裡
-    return next((a for a in catalog if a["url"] == url), None)
+    return next((a for a in catalog if a.get("url") == url), None)
 
 
 async def main() -> None:
@@ -86,22 +138,31 @@ async def main() -> None:
         logger.warning("沒有輸入需求")
         return
 
-    # 2. 抓 registry 全部目錄（registry 有啟用 OAuth 時自動帶 token）
-    catalog = httpx.get(f"{REGISTRY_URL}/agents", headers=await bearer_header()).json()
-    if not catalog:
-        logger.warning("registry 目錄是空的")
+    logger.info("[需求] {}", request_text)
+
+    # 2. 先經 registry /search 做 semantic discover，拿出最相似的 3 個 agent
+    candidates = await discover_candidates(request_text)
+    if not candidates:
+        logger.warning("registry 沒有找到可用候選 agent")
         return
+
     logger.info(
-        "[registry] 目錄有 {} 個 agent：{}", len(catalog), [a["name"] for a in catalog]
+        "[registry] 語義候選有 {} 個 agent：{}",
+        len(candidates),
+        [
+            item.get("displayName") or item.get("name") or item.get("url")
+            for item in candidates
+        ],
     )
 
-    # 3. 依需求讓 LLM 挑合適的 agent
-    logger.info("[需求] {}", request_text)
-    chosen = await pick_agent(request_text, catalog)
+    # 3. 依需求讓 LLM 從這三個候選中挑合適的 agent
+    chosen = await pick_agent(request_text, candidates)
     if chosen is None:
         logger.warning("找不到合適的 agent 處理這個需求")
         return
-    logger.info("[router] 委派給：{} @ {}", chosen["name"], chosen["url"])
+
+    display_name = chosen.get("displayName") or chosen.get("name") or chosen.get("url")
+    logger.info("[router] 委派給：{} @ {}", display_name, chosen.get("url"))
 
     # 4. 連上選中的 agent，送出需求（agent 有啟用 OAuth 時自動帶 token）
     config = ClientConfig(httpx_client=httpx.AsyncClient(timeout=httpx.Timeout(120.0)))

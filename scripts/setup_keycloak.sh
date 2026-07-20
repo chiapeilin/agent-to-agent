@@ -1,4 +1,4 @@
-# 一鍵起本機 Keycloak，建好 realm / client / scope / audience，並把 OAuth 變數寫進 .env。
+# 一鍵起本機 Keycloak，為本機所有 A2A agent 共用一組 realm / client / scope / audience，並把 OAuth 變數寫進 .env。
 # 可重複執行：
 #   啟用：bash scripts/setup_keycloak.sh
 #   收工：docker rm -f a2a-keycloak
@@ -7,10 +7,10 @@
 #
 set -euo pipefail
 
-REALM=a2a
-CLIENT_ID=code-review-client
-SCOPE=code_review.invoke
-AUDIENCE=code-review-agent
+REALM="${REALM:-a2a}"
+CLIENT_ID="${CLIENT_ID:-a2a-agents-client}"
+SCOPE="${SCOPE:-a2a.invoke}"
+AUDIENCE="${AUDIENCE:-a2a-agents}"
 CONTAINER=a2a-keycloak
 BASE=http://localhost:8080
 ENV_FILE="${ENV_FILE:-.env}"
@@ -66,8 +66,8 @@ ok "$(api PUT "/admin/realms/$REALM/clients/$CUID/default-client-scopes/$SID")"
 # 8. client secret
 SECRET=$(curl -s "$BASE/admin/realms/$REALM/clients/$CUID/client-secret" -H "Authorization: Bearer $TOKEN" | jq -r .value)
 
-# 9. 寫 .env（已有 A2A_OIDC_ISSUER 就只印出、不覆蓋）
-BLOCK="
+# 9. 寫 .env
+BLOCK=$(cat <<EOF
 # ── 由 scripts/setup_keycloak.sh 產生 ──
 A2A_OIDC_ISSUER=$BASE/realms/$REALM
 A2A_OIDC_AUDIENCE=$AUDIENCE
@@ -75,12 +75,30 @@ A2A_REQUIRED_SCOPE=$SCOPE
 A2A_OAUTH_TOKEN_URL=$BASE/realms/$REALM/protocol/openid-connect/token
 A2A_OAUTH_CLIENT_ID=$CLIENT_ID
 A2A_OAUTH_CLIENT_SECRET=$SECRET
-A2A_OAUTH_SCOPE=$SCOPE"
+A2A_OAUTH_SCOPE=$SCOPE
+EOF
+)
 
-echo "════════════════════════════════════════"; echo "$BLOCK"; echo "════════════════════════════════════════"
-# upsert：先移除舊的 A2A_* 與產生標記，再寫入最新（重跑後 secret 一定同步）
-touch "$ENV_FILE"
-grep -vE '^(# ── 由 scripts/setup_keycloak|A2A_OIDC_|A2A_OAUTH_|A2A_REQUIRED_SCOPE)' "$ENV_FILE" > "$ENV_FILE.tmp" || true
-printf '%s\n' "$BLOCK" >> "$ENV_FILE.tmp"
-mv "$ENV_FILE.tmp" "$ENV_FILE"
-echo "✓ 已更新 ${ENV_FILE} （舊的 A2A_* 會被最新值取代）"
+echo "$BLOCK"
+
+if [ -f "$ENV_FILE" ]; then
+  tmp_file=$(mktemp)
+  awk '
+    BEGIN { in_block=0 }
+    /^# ── 由 scripts\/setup_keycloak\.sh 產生 ──$/ { in_block=1; next }
+    in_block && /^(A2A_OIDC_|A2A_OAUTH_|A2A_REQUIRED_SCOPE)/ { next }
+    in_block && /^$/ { next }
+    {
+      if (in_block && $0 ~ /^(A2A_OIDC_|A2A_OAUTH_|A2A_REQUIRED_SCOPE)/) next
+      print
+      in_block=0
+    }
+    END { }
+  ' "$ENV_FILE" > "$tmp_file"
+  { cat "$tmp_file"; printf '\n%s\n' "$BLOCK"; } > "$ENV_FILE"
+  rm -f "$tmp_file"
+else
+  printf '%s\n' "$BLOCK" > "$ENV_FILE"
+fi
+
+echo "✓ 已更新 ${ENV_FILE}"

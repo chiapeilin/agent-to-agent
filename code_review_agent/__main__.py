@@ -17,7 +17,7 @@ from loguru import logger
 from starlette.applications import Starlette
 
 from code_review_agent.agent_executor import CodeReviewAgentExecutor
-from code_review_agent.auth import (
+from shared.auth import (
     AuthConfig,
     OAuth2Middleware,
     build_card_security,
@@ -28,7 +28,7 @@ from code_review_agent.auth import (
 load_dotenv()
 
 HOST = os.environ.get("CODE_REVIEW_HOST", "127.0.0.1")
-PORT = int(os.environ.get("CODE_REVIEW_PORT", "9999"))
+PORT = int(os.environ.get("CODE_REVIEW_PORT", "8001"))
 PUBLIC_URL = os.environ.get("CODE_REVIEW_PUBLIC_URL", f"http://{HOST}:{PORT}")
 
 # 啟動時主動向 registry 報到（push）；token 兩邊設同值，防止任意人亂註冊。

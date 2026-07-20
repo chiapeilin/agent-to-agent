@@ -1,14 +1,4 @@
-"""A2A 的 OAuth2 / OIDC 驗證：server 端驗票、client 端取票，共用一份設定。
-
-server：一個 ASGI middleware，驗每個請求的 Bearer JWT（簽章 + iss/aud/exp），
-再視需要查 scope；Agent Card（/.well-known/）依規範免認證發現。
-client：用 client_credentials flow 換 token 並自動帶上。
-
-全靠環境變數開關，issuer + audience 兩個必填變數沒設就整個關閉（無認證，僅供本機開發）：
-    A2A_OIDC_ISSUER / A2A_OIDC_AUDIENCE   必填，開啟 server 端驗票
-    A2A_OIDC_JWKS_URL / A2A_OIDC_ALGORITHMS / A2A_REQUIRED_SCOPE   選填
-    A2A_OAUTH_TOKEN_URL / _CLIENT_ID / _CLIENT_SECRET / _SCOPE     client 端取票
-"""
+"""Shared OAuth2/OIDC helper module for agents and registry clients."""
 
 import os
 import time
@@ -84,9 +74,7 @@ def build_card_security(
         )
     )
     scopes = [config.required_scope] if config.required_scope else []
-    requirement = SecurityRequirement(
-        schemes={_SCHEME_NAME: StringList(list=scopes)}
-    )
+    requirement = SecurityRequirement(schemes={_SCHEME_NAME: StringList(list=scopes)})
     return {_SCHEME_NAME: scheme}, [requirement]
 
 
@@ -111,12 +99,10 @@ class OAuth2Middleware:
     ) -> None:
         self.app = app
         self.config = config
-        # 免 OAuth 的路徑前綴（如 registry 的 /register，走自己的 x-registry-token）。
         self._public_prefixes = tuple(public_path_prefixes)
         self._jwk_client: PyJWKClient | None = None
 
     def _client(self) -> PyJWKClient:
-        # 首用才建；沒給 jwks_url 就走 discovery。之後由 PyJWKClient 快取。
         if self._jwk_client is None:
             jwks_url = self.config.jwks_url or self._discover_jwks_url()
             self._jwk_client = PyJWKClient(jwks_url)
@@ -128,8 +114,6 @@ class OAuth2Middleware:
         return resp.json()["jwks_uri"]
 
     def _verify(self, token: str) -> dict:
-        # 阻塞式，由呼叫端丟 thread 跑。連不上 IdP/JWKS 是基礎設施故障（→ 503），
-        # 轉 _IdPUnavailable 與「token 無效」（→ 401）區隔。
         try:
             signing_key = self._client().get_signing_key_from_jwt(token)
         except (PyJWKClientConnectionError, httpx.HTTPError) as exc:
@@ -147,7 +131,6 @@ class OAuth2Middleware:
             await self.app(scope, receive, send)
             return
 
-        # Agent Card 依規範免認證發現；另放行呼叫端指定的豁免前綴。
         path = scope.get("path", "")
         if path.startswith("/.well-known/") or any(
             path.startswith(p) for p in self._public_prefixes
@@ -157,28 +140,30 @@ class OAuth2Middleware:
 
         auth = Headers(scope=scope).get("authorization", "")
         if not auth.startswith("Bearer "):
-            await self._reject(scope, receive, send, 401, "invalid_token", "缺少 Bearer token")
+            await self._reject(
+                scope, receive, send, 401, "invalid_token", "缺少 Bearer token"
+            )
             return
         token = auth[len("Bearer ") :].strip()
 
         try:
             claims = await anyio.to_thread.run_sync(self._verify, token)
         except _IdPUnavailable as exc:
-            # 合法 token 也會走到這：回 503 而非 401，免得把基礎設施故障誤判成 token 壞掉。
             logger.error("OIDC 驗證失敗：連不上 IdP/JWKS：{}", exc)
             await self._reject_unavailable(scope, receive, send, str(exc))
             return
-        except Exception as exc:  # noqa: BLE001 - JWT 本身的驗證失敗都視為 401
+        except Exception as exc:  # noqa: BLE001
             logger.info("OIDC 驗證失敗：token 無效：{}", exc)
             await self._reject(scope, receive, send, 401, "invalid_token", str(exc))
             return
 
-        # 有設 required_scope 才查 scope（沒設 = 只驗身分）
-        if self.config.required_scope and self.config.required_scope not in _granted_scopes(claims):
+        if (
+            self.config.required_scope
+            and self.config.required_scope not in _granted_scopes(claims)
+        ):
             await self._reject_scope(scope, receive, send)
             return
 
-        # 通過：記一筆讓 log 看得見認證有生效，並把 claims 傳給下游。
         logger.info(
             "OIDC ✓ 通過 {}  sub={} client={} scope=[{}]",
             path,
@@ -192,7 +177,6 @@ class OAuth2Middleware:
     async def _reject(
         self, scope, receive, send, status: int, error: str, desc: str
     ) -> None:
-        # WWW-Authenticate 只能是 latin-1（ASCII），中文描述放 JSON body。
         response = JSONResponse(
             {"error": error, "error_description": desc},
             status_code=status,
@@ -201,7 +185,6 @@ class OAuth2Middleware:
         await response(scope, receive, send)
 
     async def _reject_unavailable(self, scope, receive, send, desc: str) -> None:
-        # 非認證錯誤：不帶 WWW-Authenticate，用 503 + Retry-After 表示暫時性、可重試。
         response = JSONResponse(
             {"error": "temporarily_unavailable", "error_description": desc},
             status_code=503,
@@ -214,21 +197,15 @@ class OAuth2Middleware:
         response = JSONResponse(
             {"error": "insufficient_scope", "required_scope": required},
             status_code=403,
-            headers={"WWW-Authenticate": f'Bearer error="insufficient_scope", scope="{required}"'},
+            headers={
+                "WWW-Authenticate": f'Bearer error="insufficient_scope", scope="{required}"'
+            },
         )
         await response(scope, receive, send)
 
 
-# ─────────────────────────────────────────────────────────────
-# Client 端：取 token 並帶上（供 test_client / registry_client 共用）
-# ─────────────────────────────────────────────────────────────
-
-
 class OAuth2Credentials(CredentialService):
-    """client_credentials flow 取 token，快取到過期前重用。
-
-    AuthInterceptor 每次送請求前呼叫 get_credentials()，回傳值會塞進 Bearer header。
-    """
+    """client_credentials flow 取 token，快取到過期前重用。"""
 
     def __init__(
         self,
@@ -247,8 +224,6 @@ class OAuth2Credentials(CredentialService):
     async def get_credentials(
         self, security_scheme_name: str, context: ClientCallContext | None
     ) -> str | None:
-        """回傳有效的 access token；快取過期才重新去 token endpoint 換。"""
-        # 留 60 秒緩衝，避免臨界過期
         if self._token and time.time() < self._expires_at - 60:
             return self._token
 
@@ -271,7 +246,6 @@ class OAuth2Credentials(CredentialService):
 
 
 def build_credentials() -> OAuth2Credentials | None:
-    """A2A_OAUTH_* 都有設就回傳 credential service，沒設回 None（走無認證）。"""
     token_url = os.environ.get("A2A_OAUTH_TOKEN_URL")
     client_id = os.environ.get("A2A_OAUTH_CLIENT_ID")
     client_secret = os.environ.get("A2A_OAUTH_CLIENT_SECRET")
@@ -287,18 +261,25 @@ def build_credentials() -> OAuth2Credentials | None:
 
 
 def build_auth_interceptor() -> AuthInterceptor | None:
-    """給 a2a client 用：有設 A2A_OAUTH_* 就回 AuthInterceptor，沒設回 None。"""
     creds = build_credentials()
     return AuthInterceptor(creds) if creds else None
 
 
 async def bearer_header() -> dict[str, str]:
-    """給非 a2a 的原始 httpx 呼叫用（如打 registry 的 GET /agents）。
-
-    有設 A2A_OAUTH_* 回 {"Authorization": "Bearer <token>"}，沒設回空 dict（展開後等於不加）。
-    """
     creds = build_credentials()
     if creds is None:
         return {}
     token = await creds.get_credentials(_SCHEME_NAME, None)
     return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+__all__ = [
+    "AuthConfig",
+    "OAuth2Credentials",
+    "OAuth2Middleware",
+    "build_auth_interceptor",
+    "build_card_security",
+    "build_credentials",
+    "bearer_header",
+    "load_auth_config",
+]

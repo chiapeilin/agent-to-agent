@@ -20,12 +20,12 @@ from a2a.types import Role, SendMessageRequest
 from dotenv import load_dotenv
 from loguru import logger
 
-from code_review_agent.auth import build_auth_interceptor
+from shared.auth import build_auth_interceptor
 
 # 讀取 repo 根目錄的 .env，讓 A2A_OAUTH_* 免手動 export
 load_dotenv()
 
-AGENT_URL = os.environ.get("CODE_REVIEW_AGENT_URL", "http://127.0.0.1:9999")
+AGENT_URL = os.environ.get("CODE_REVIEW_AGENT_URL", "http://127.0.0.1:8001")
 
 REQUEST = "幫我 review 現有的程式碼架構"
 
