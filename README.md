@@ -1,8 +1,10 @@
 # agent-to-agent
 
-把一個 code-review skill 包成 [A2A](https://github.com/a2aproject/a2a-samples) agent，並用一個 curated registry 讓 client 自動發現、委派。
+把數個 skill 各自包成 [A2A](https://github.com/a2aproject/a2a-samples) agent，並用一個 curated registry 讓 client 自動發現、委派。
 
-- **Agent**：讀根目錄（`CODE_REVIEW_REPO_PATH`）原始碼 → 套 code-review prompt 呼叫 OpenAI → 回傳 review。
+- **Agents**：四個 A2A agent，各自宣告 skill 對外服務——
+  - `code_review`（主角）：讀根目錄（`CODE_REVIEW_REPO_PATH`）原始碼 → 套 code-review prompt 呼叫 OpenAI → 回傳 review。
+  - `translation` / `uppercase` / `image_analyzer`：示範用 sample agent（翻譯、轉大寫、影像描述）。
 - **Registry**：維護可信 agent 清單，提供查詢 / 依 skill 篩選。收錄方式為 **pull**（讀 `REGISTRY_AGENT_URLS` 主動抓名片）或 **push**（agent 帶 `REGISTRY_URL` 啟動時自報到 `/register`）。
 - **Client（router）**：收需求 → 上 registry 用 LLM 挑 agent → 委派。
 
@@ -39,7 +41,7 @@ uv run python registry.py    # 8000
 # 查目錄：curl "http://127.0.0.1:8000/agents"
 ```
 
-### 3. Client
+### 3. Client agent
 ```bash
 uv run python registry_client.py                  # 互動輸入需求，經 registry 委派
 uv run python -m translation_agent.test_client    # 或直連指定 agent
@@ -72,28 +74,30 @@ colima stop                       # 不用容器時關 VM
 
 ## 檔案結構
 
-四個 agent 結構一致：`__main__.py`（AgentCard + server 進入點）、`agent_executor.py`（實際邏輯）、`test_client.py`（直連測試），app 組裝統一交給 `shared/server`。
+共有四個 agent（`code_review` / `translation` / `uppercase` / `image_analyzer`），結構一致，每個資料夾下：
 
 ```
-shared/                 # 共用模組
-├── auth.py             # OAuth2/OIDC 驗證（server middleware + client 取 token）
-├── server.py           # A2A app 組裝（card 安全宣告、路由、middleware）
-└── client.py           # 最小 A2A client：連線、送 parts、串流印回應
-
-code_review_agent/      # 主要 code-review agent（讀 repo 原始碼做 review）
-├── __main__.py
-├── agent_executor.py
-├── prompt.md           # code-review 的審查標準（system prompt）
-└── test_client.py
-
-translation_agent/      # 內建 sample agent（uppercase / image_analyzer 同結構）
-├── __main__.py
-├── agent_executor.py
-└── test_client.py
-
-registry.py             # curated registry 服務
-registry_client.py      # 經 registry 找 agent 並委派的 router client
-scripts/setup_keycloak.sh  # 一鍵起本機 Keycloak 並產生 OAuth 設定
+code_review_agent/
+├── __main__.py         # AgentCard（名片 / skill / port）+ server 進入點
+├── agent_executor.py   # agent 實際邏輯（收訊息 → 處理 → 回 artifact）
+├── prompt.md           # 僅 code_review 有：審查標準（system prompt）
+└── test_client.py      # 直連此 agent 的測試 client
 ```
 
-改東西：審查標準改 `prompt.md`；agent 邏輯改 `agent_executor.py`；名片/skill/port 改 `__main__.py`；收錄哪些 agent 改 `REGISTRY_AGENT_URLS`。A2A client / server 的共用邏輯都在 `shared/`。
+共用模組：
+
+```
+shared/
+├── auth.py     # OAuth2/OIDC 驗證（server middleware + client 取 token）
+├── server.py   # A2A app 組裝（card 安全宣告、路由、middleware）
+└── client.py   # 最小 A2A client：連線、送 parts、串流印回應
+```
+
+最外層：
+
+```
+registry.py         # curated registry 服務：聚合各 agent 名片、提供語義搜尋
+registry_client.py  # router client：經 registry 挑 agent 並委派需求
+```
+
+改東西：agent 邏輯改 `agent_executor.py`；名片/skill/port 改 `__main__.py`；審查標準改 `prompt.md`；收錄哪些 agent 改 `REGISTRY_AGENT_URLS`。
