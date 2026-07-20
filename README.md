@@ -2,10 +2,12 @@
 
 把數個 skill 各自包成 [A2A](https://github.com/a2aproject/a2a-samples) agent，並用一個 curated registry 讓 client 自動發現、委派。
 
-- **Agents**：四個 A2A agent，各自宣告 skill 對外服務——
-  - `code_review`（主角）：讀根目錄（`CODE_REVIEW_REPO_PATH`）原始碼 → 套 code-review prompt 呼叫 OpenAI → 回傳 review。
-  - `translation` / `uppercase` / `image_analyzer`：示範用 sample agent（翻譯、轉大寫、影像描述）。
-- **Registry**：維護可信 agent 清單，提供查詢 / 依 skill 篩選。收錄方式為 **pull**（讀 `REGISTRY_AGENT_URLS` 主動抓名片）或 **push**（agent 帶 `REGISTRY_URL` 啟動時自報到 `/register`）。
+- **Agents**：四個 A2A agent，各自宣告 skill 對外服務：
+  - `code_review`：讀根目錄（`CODE_REVIEW_REPO_PATH`）原始碼 → 套 prompt 呼叫 OpenAI 做 code review。
+  - `translation`：中英雙向翻譯。
+  - `uppercase`：文字轉大寫。
+  - `image_analyzer`：呼叫 vision 模型描述圖片。
+- **Registry**：維護可信 agent 清單（`REGISTRY_AGENT_URLS`，預設四個內建 agent），提供查詢 / 依 skill 篩選。收錄採 **pull**：查詢時 registry 主動去打每個 agent 的 `/.well-known/agent-card.json`（A2A 標準）抓名片。
 - **Client（router）**：收需求 → 上 registry 用 LLM 挑 agent → 委派。
 
 ## 安裝
@@ -50,7 +52,7 @@ uv run python -m translation_agent.test_client    # 或直連指定 agent
 
 ## 認證（OAuth2 / OIDC，選用）
 
-預設無認證；`.env` 有 `A2A_OIDC_*` 就自動啟用。啟用後 agent 與 registry 都對每個請求驗 JWT（缺/壞 token → 401、IdP 連不上 → 503）；agent 另查 scope（不足 → 403），registry 只驗身分、`POST /register` 走 `x-registry-token`。client 會自動換 token 帶上。驗過的請求會在 server log 印一行 `OIDC ✓ 通過 …`。
+預設無認證；`.env` 有 `A2A_OIDC_*` 就自動啟用。啟用後 agent 與 registry 都對每個請求驗 JWT（缺/壞 token → 401、IdP 連不上 → 503）；agent 另查 scope（不足 → 403），registry 只驗身分。client 會自動換 token 帶上。驗過的請求會在 server log 印一行 `OIDC ✓ 通過 …`。
 
 本機用 [Keycloak](https://www.keycloak.org/) 當 IdP、[Colima](https://github.com/abiosoft/colima) 當容器：
 

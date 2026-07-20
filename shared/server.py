@@ -1,7 +1,5 @@
 """共用的 A2A server 組裝：把 card 安全宣告與 Starlette app 建立抽成一處。"""
 
-from typing import Callable
-
 from a2a.server.agent_execution import AgentExecutor
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
@@ -28,7 +26,6 @@ def build_agent_app(
     *,
     rpc_path: str = "/jsonrpc",
     auth_config: AuthConfig | None = None,
-    lifespan: Callable | None = None,
 ) -> Starlette:
     """把 executor 掛上 A2A server：開 agent-card + JSON-RPC 路由，有 OIDC 就掛驗證 middleware。"""
     request_handler = DefaultRequestHandler(
@@ -40,7 +37,7 @@ def build_agent_app(
         *create_agent_card_routes(card),
         *create_jsonrpc_routes(request_handler, rpc_path),
     ]
-    app = Starlette(routes=routes, lifespan=lifespan)
+    app = Starlette(routes=routes)
     if auth_config is not None:
         app.add_middleware(OAuth2Middleware, config=auth_config)
     return app

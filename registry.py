@@ -9,7 +9,6 @@ import os
 import re
 from dataclasses import replace
 from pathlib import Path
-from urllib.parse import urlparse
 
 import httpx
 import uvicorn
@@ -30,35 +29,20 @@ PORT = int(os.environ.get("REGISTRY_PORT", "8000"))
 EMBEDDING_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 CATALOG_PATH = Path(__file__).with_name("ai-catalog.json")
 
-# curated 白名單：只有列在這裡的 agent 才會被收錄。
+# curated 白名單：registry 只會 pull（主動抓名片）列在這裡的 agent。去重保序。
 DEFAULT_AGENT_URLS = (
     "http://127.0.0.1:8001,"  # code review agent
     "http://127.0.0.1:8002,"  # translation agent
     "http://127.0.0.1:8003,"  # uppercase agent
     "http://127.0.0.1:8004,"  # image analyzer agent
 )
-CURATED_URLS = [
-    u.strip()
-    for u in os.environ.get("REGISTRY_AGENT_URLS", DEFAULT_AGENT_URLS).split(",")
-    if u.strip()
-]
-
-# self-registration：agent 啟動時可 POST /register 把自己加入（push 模式）。
-REGISTERED_URLS: set[str] = set()
-
-# 設了則 /register 需帶對的 token（x-registry-token），避免任意人亂註冊。
-REGISTER_TOKEN = os.environ.get("REGISTRY_REGISTER_TOKEN")
-
-
-def _all_urls() -> list[str]:
-    """curated 白名單 + 動態註冊，去重後的完整清單。"""
-    return list(dict.fromkeys([*CURATED_URLS, *sorted(REGISTERED_URLS)]))
-
-
-def _is_valid_agent_url(url: str) -> bool:
-    """只接受 http/https 且有 host 的 URL。"""
-    parsed = urlparse(url)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+CURATED_URLS = list(
+    dict.fromkeys(
+        u.strip()
+        for u in os.environ.get("REGISTRY_AGENT_URLS", DEFAULT_AGENT_URLS).split(",")
+        if u.strip()
+    )
+)
 
 
 def build_catalog_payload(entries: list[dict]) -> dict:
@@ -130,27 +114,13 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-async def register(request):
-    """POST /register {"url": "..."} → agent 自我註冊（可選 token 驗證）。"""
-    if REGISTER_TOKEN and request.headers.get("x-registry-token") != REGISTER_TOKEN:
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-
-    data = await request.json()
-    url = (data.get("url") or "").strip().rstrip("/")
-    if not _is_valid_agent_url(url):
-        return JSONResponse({"error": "invalid url"}, status_code=400)
-    REGISTERED_URLS.add(url)
-    logger.info("[registry] 收到註冊：{}", url)
-    return JSONResponse({"ok": True, "registered": url})
-
-
 async def _fetch_agent_catalogs() -> list[dict]:
-    """從每個 agent 的 agent-card.json 建立 catalog entries。"""
+    """從每個 curated agent 的 agent-card.json 建立 catalog entries。"""
     entries: list[dict] = []
     # Registry 對 agent 的呼叫也要驗證。
     headers = await bearer_header()
     async with httpx.AsyncClient(timeout=10) as client:
-        for agent_url in _all_urls():
+        for agent_url in CURATED_URLS:
             try:
                 card_url = f"{agent_url.rstrip('/')}/.well-known/agent-card.json"
                 response = await client.get(card_url, headers=headers)
@@ -281,19 +251,16 @@ app = Starlette(
         Route("/.well-known/ai-catalog.json", ai_catalog_handler),
         Route("/search", search_handler, methods=["POST"]),
         Route("/agents", list_agents),
-        Route("/register", register, methods=["POST"]),
     ]
 )
 
-# 跟 agent 同一套 middleware，兩點差異：
-#   - required_scope 清成 None：讀目錄只驗身分，不需要 code_review.invoke scope。
-#   - /register 走自己的 x-registry-token，豁免 OAuth。
+# 跟 agent 同一套 middleware，但 required_scope 清成 None：
+# 讀目錄只驗身分，不需要 code_review.invoke scope。
 _auth_config = load_auth_config()
 if _auth_config is not None:
     app.add_middleware(
         OAuth2Middleware,
         config=replace(_auth_config, required_scope=None),
-        public_path_prefixes=("/register",),
     )
     logger.info("[registry] OAuth2/OIDC 驗證已啟用（issuer={}）", _auth_config.issuer)
 else:

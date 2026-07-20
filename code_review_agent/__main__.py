@@ -4,9 +4,7 @@
 """
 
 import os
-from contextlib import asynccontextmanager
 
-import httpx
 import uvicorn
 from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
 from dotenv import load_dotenv
@@ -14,7 +12,7 @@ from loguru import logger
 from starlette.applications import Starlette
 
 from code_review_agent.agent_executor import CodeReviewAgentExecutor
-from shared.auth import AuthConfig, bearer_header, load_auth_config
+from shared.auth import AuthConfig, load_auth_config
 from shared.server import apply_card_security, build_agent_app
 
 # 顯式載入 .env：認證設定（A2A_OIDC_*）沒讀到會靜默退回無認證，別靠 import 副作用。
@@ -23,10 +21,6 @@ load_dotenv()
 HOST = os.environ.get("CODE_REVIEW_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CODE_REVIEW_PORT", "8001"))
 PUBLIC_URL = os.environ.get("CODE_REVIEW_PUBLIC_URL", f"http://{HOST}:{PORT}")
-
-# 啟動時主動向 registry 報到（push）；token 兩邊設同值，防止任意人亂註冊。
-REGISTRY_URL = os.environ.get("REGISTRY_URL")
-REGISTRY_REGISTER_TOKEN = os.environ.get("REGISTRY_REGISTER_TOKEN")
 
 
 def build_agent_card(auth_config: AuthConfig | None = None) -> AgentCard:
@@ -66,32 +60,8 @@ def build_agent_card(auth_config: AuthConfig | None = None) -> AgentCard:
     return apply_card_security(card, auth_config)
 
 
-async def _register_with_registry() -> None:
-    """啟動時向 registry 報到。registry 掛了也不影響 agent 自己。"""
-    if not REGISTRY_URL:
-        return
-    # 內部呼叫一律帶 Bearer。
-    headers = await bearer_header()
-    if REGISTRY_REGISTER_TOKEN:
-        headers["x-registry-token"] = REGISTRY_REGISTER_TOKEN
-    try:
-        async with httpx.AsyncClient(timeout=5) as http:
-            await http.post(
-                f"{REGISTRY_URL}/register", json={"url": PUBLIC_URL}, headers=headers
-            )
-        logger.info("[agent] 已向 registry 註冊：{} → {}", PUBLIC_URL, REGISTRY_URL)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[agent] 向 registry 註冊失敗（不影響 agent 運作）：{}", exc)
-
-
-@asynccontextmanager
-async def _lifespan(app):
-    await _register_with_registry()  # server 啟動時自我註冊
-    yield
-
-
 def build_app() -> Starlette:
-    """把 executor 掛上 A2A server（JSON-RPC 掛在 "/"），並在啟動時向 registry 報到。"""
+    """把 executor 掛上 A2A server（JSON-RPC 掛在 "/"）。"""
     auth_config = load_auth_config()
     card = build_agent_card(auth_config)
     if auth_config is not None:
@@ -103,7 +73,6 @@ def build_app() -> Starlette:
         CodeReviewAgentExecutor(),
         rpc_path="/",
         auth_config=auth_config,
-        lifespan=_lifespan,
     )
 
 
