@@ -51,7 +51,7 @@ def build_agent_card(auth_config: AuthConfig | None = None) -> AgentCard:
         supported_interfaces=[
             AgentInterface(
                 protocol_binding="JSONRPC",
-                url=PUBLIC_URL,  # 與註冊給 registry 的 URL 一致（反代/容器後也正確）
+                url=f"{PUBLIC_URL}/jsonrpc",  # 與註冊給 registry 的 URL 一致（反代/容器後也正確）
                 protocol_version="1.0",
             )
         ],
@@ -61,7 +61,7 @@ def build_agent_card(auth_config: AuthConfig | None = None) -> AgentCard:
 
 
 def build_app() -> Starlette:
-    """把 executor 掛上 A2A server（JSON-RPC 掛在 "/"）。"""
+    """把 executor 掛上 A2A server（JSON-RPC 掛在 /jsonrpc）。"""
     auth_config = load_auth_config()
     card = build_agent_card(auth_config)
     if auth_config is not None:
@@ -71,7 +71,6 @@ def build_app() -> Starlette:
     return build_agent_app(
         card,
         CodeReviewAgentExecutor(),
-        rpc_path="/",
         auth_config=auth_config,
     )
 
