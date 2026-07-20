@@ -96,10 +96,12 @@ class OAuth2Middleware:
         self,
         app: ASGIApp,
         config: AuthConfig,
+        name: str = "a2a",
         public_path_prefixes: tuple[str, ...] = (),
     ) -> None:
         self.app = app
         self.config = config
+        self._name = name
         self._public_prefixes = tuple(public_path_prefixes)
         self._jwk_client: PyJWKClient | None = None
 
@@ -150,11 +152,11 @@ class OAuth2Middleware:
         try:
             claims = await anyio.to_thread.run_sync(self._verify, token)
         except _IdPUnavailable as exc:
-            logger.error("OIDC 驗證失敗：連不上 IdP/JWKS：{}", exc)
+            logger.error("[{}] OIDC 驗證失敗：連不上 IdP/JWKS：{}", self._name, exc)
             await self._reject_unavailable(scope, receive, send, str(exc))
             return
         except Exception as exc:  # noqa: BLE001
-            logger.info("OIDC 驗證失敗：token 無效：{}", exc)
+            logger.info("[{}] OIDC 驗證失敗：token 無效：{}", self._name, exc)
             await self._reject(scope, receive, send, 401, "invalid_token", str(exc))
             return
 
@@ -166,7 +168,8 @@ class OAuth2Middleware:
             return
 
         logger.info(
-            "OIDC ✓ 通過 {}  sub={} client={} scope=[{}]",
+            "[{}] OIDC ✓ 通過 {}  sub={} client={} scope=[{}]",
+            self._name,
             path,
             claims.get("sub", "?"),
             claims.get("azp") or claims.get("client_id", "?"),

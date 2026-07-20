@@ -8,7 +8,7 @@
   - `uppercase`：文字轉大寫。
   - `image_analyzer`：呼叫 vision 模型描述圖片。
 - **Registry**：維護可信 agent 清單（`REGISTRY_AGENT_URLS`，預設四個內建 agent），提供查詢 / 依 skill 篩選。收錄採 **pull**：查詢時 registry 主動去打每個 agent 的 `/.well-known/agent-card.json`（A2A 標準）抓名片。
-- **Client（router）**：收需求 → 上 registry 用 LLM 挑 agent → 委派。
+- **Client（router）**：收需求 → ARD 上 registry 做語義搜尋取 top-k 候選 → LLM 從候選挑選 → 委派。
 
 ## 安裝
 

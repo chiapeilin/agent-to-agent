@@ -261,6 +261,7 @@ if _auth_config is not None:
     app.add_middleware(
         OAuth2Middleware,
         config=replace(_auth_config, required_scope=None),
+        name="Registry",
     )
     logger.info("[registry] OAuth2/OIDC 驗證已啟用（issuer={}）", _auth_config.issuer)
 else:

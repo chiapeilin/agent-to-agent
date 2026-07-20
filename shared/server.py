@@ -39,5 +39,5 @@ def build_agent_app(
     ]
     app = Starlette(routes=routes)
     if auth_config is not None:
-        app.add_middleware(OAuth2Middleware, config=auth_config)
+        app.add_middleware(OAuth2Middleware, config=auth_config, name=card.name)
     return app
