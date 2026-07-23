@@ -43,6 +43,17 @@ uv run python registry.py    # 8000
 # 查目錄：curl "http://127.0.0.1:8000/agents"
 ```
 
+#### 拿 ai-catalog.json（ARD 快照）
+
+委派流程（client → `/search` → 委派）全程在記憶體 live 抓名片，**不會**碰磁碟上的 `ai-catalog.json`。這份檔案只在你打 well-known endpoint 時產生／刷新（`ai_catalog_handler` 會即時聚合所有 agent 名片並寫回檔案）：
+
+```bash
+# 印出並同時把最新快照寫回 ai-catalog.json（此路由免帶 token）
+curl -s http://127.0.0.1:8000/.well-known/ai-catalog.json | python3 -m json.tool
+```
+
+內容空的話依序檢查有沒有都在跑：Keycloak（`docker start a2a-keycloak`）→ 4 個 agent（`bash scripts/run_a2a_ard_agents.sh`）→ registry。
+
 ### 3. Client agent
 ```bash
 uv run python registry_client.py                  # 互動輸入需求，經 registry 委派

@@ -134,16 +134,22 @@ async def _fetch_agent_catalogs() -> list[dict]:
 
                 agent_card = response.json()
                 tags = []
+                queries = []
                 if isinstance(agent_card.get("skills"), list):
                     for skill in agent_card["skills"]:
                         tags.extend(skill.get("tags", []))
+                        queries.extend(skill.get("examples", []))
 
+                # ARD 選填欄位：skill 的 examples → representativeQueries（接在 description 後，無則不放）。
+                queries = list(dict.fromkeys(queries))
+                optional = {"representativeQueries": queries} if queries else {}
                 entry = {
                     "identifier": f"urn:air:{agent_card.get('name', 'unknown').lower().replace(' ', '-')}:a2a",
                     "type": "application/a2a-agent-card+json",
                     "url": agent_url.rstrip("/"),
                     "displayName": agent_card.get("name", "Unknown Agent"),
                     "description": agent_card.get("description", ""),
+                    **optional,
                     "tags": list(dict.fromkeys(tags)),
                     "version": agent_card.get("version", "0.0.0"),
                 }
